@@ -904,3 +904,67 @@ button {
   box-shadow: var(--shadow-modal);
   z-index: 60;
 }
+
+/* ---------- Auth & API states ---------- */
+.link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  min-height: 24px;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: inherit;
+}
+.link-btn:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+.form-error {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 14px;
+  font-weight: 500;
+}
+.code-input {
+  font-size: 22px;
+  letter-spacing: 0.3em;
+  text-align: center;
+  height: 54px;
+}
+.boot {
+  min-height: 100vh;
+  background: var(--bg);
+}
+.banner-error {
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 14px;
+}
+.menu-user {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+.menu-user span {
+  color: var(--text-2);
+}
+.test-hint {
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.test-hint code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-weight: 700;
+}

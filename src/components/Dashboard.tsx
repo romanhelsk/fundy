@@ -1,21 +1,9 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
-import {
-  BRAND_NAME,
-  CLIENT_INITIALS,
-  CLIENT_NAME,
-  DEMO_TODAY,
-  IS_DEMO,
-  TOTAL_TX_COUNT,
-  initialBalance,
-  initialTransactions,
-  methodById,
-  monthSummary,
-  paymentMethods,
-  type Transaction,
-  type TxType,
-} from '../data/demo';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api, ApiError } from '../api';
+import { BRAND_NAME } from '../config';
 import { formatDate, formatUSD, signedUSD, splitUSD } from '../lib/format';
-import { AddFundsModal, type DepositResult } from './AddFundsModal';
+import type { Overview, TxType, User } from '../types';
+import { AddFundsModal } from './AddFundsModal';
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -30,7 +18,9 @@ import {
 } from './Icons';
 
 interface Props {
+  user: User;
   onSignOut: () => void;
+  onSessionExpired: () => void;
 }
 
 const NAV = [
@@ -44,95 +34,109 @@ const NAV = [
 type TypeFilter = 'all' | TxType;
 type PeriodFilter = '7' | '30' | 'all';
 
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
 function daysBetween(fromIso: string, toIso: string) {
   return (Date.parse(toIso) - Date.parse(fromIso)) / 86_400_000;
 }
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]!.toUpperCase())
+    .join('');
+}
+function minutesAgo(iso: string, now: number) {
+  const m = Math.floor((now - Date.parse(iso)) / 60_000);
+  return m < 1 ? 'just now' : `${m} min ago`;
+}
 
-export function Dashboard({ onSignOut }: Props) {
-  const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
-  const [availableCents, setAvailableCents] = useState(initialBalance.availableCents);
-  const [summary, setSummary] = useState(monthSummary);
+export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
+  const [data, setData] = useState<Overview | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [now, setNow] = useState(Date.now());
 
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [period, setPeriod] = useState<PeriodFilter>('30');
 
   const addFundsBtn = useRef<HTMLButtonElement>(null);
-  const refCounter = useRef(80412);
 
-  const pendingCents = initialBalance.pendingCents;
-  const totalCents = availableCents + pendingCents;
-  const [whole, cents] = splitUSD(availableCents);
+  const load = useCallback(async () => {
+    try {
+      setData(await api.overview());
+      setLoadError(null);
+      setNow(Date.now());
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return onSessionExpired();
+      setLoadError(err instanceof ApiError ? err.message : 'Could not load your account.');
+    }
+  }, [onSessionExpired]);
+
+  useEffect(() => {
+    load();
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, [load]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     window.setTimeout(() => setToast(null), 4000);
   }, []);
 
-  const nextReference = useCallback(() => `TX-${++refCounter.current}`, []);
+  const methodLabel = useCallback(
+    (id: string) => data?.methods.find((m) => m.id === id)?.longLabel ?? 'Unknown method',
+    [data],
+  );
 
   const visible = useMemo(() => {
+    if (!data) return [];
     const q = query.trim().toLowerCase();
-    return transactions.filter((t) => {
+    const today = todayIso();
+    return data.transactions.filter((t) => {
       if (typeFilter !== 'all' && t.type !== typeFilter) return false;
-      if (period !== 'all' && daysBetween(t.date, DEMO_TODAY) > Number(period)) return false;
+      if (period !== 'all' && daysBetween(t.date, today) > Number(period)) return false;
       if (!q) return true;
-      const m = methodById(t.methodId);
-      return [t.id, t.type, t.status, m.longLabel, formatDate(t.date)].some((s) => s.toLowerCase().includes(q));
+      return [t.id, t.type, t.status, methodLabel(t.methodId), formatDate(t.date)].some((s) => s.toLowerCase().includes(q));
     });
-  }, [transactions, query, typeFilter, period]);
-
-  function handleDeposit(result: DepositResult) {
-    const tx: Transaction = {
-      id: result.reference,
-      date: DEMO_TODAY,
-      type: 'Deposit',
-      methodId: result.methodId,
-      status: result.ok ? 'Completed' : 'Failed',
-      amountCents: result.amountCents,
-    };
-    setTransactions((prev) => [tx, ...prev]);
-    // Failed deposits never touch the balance.
-    if (result.ok) {
-      setAvailableCents((c) => c + result.amountCents);
-      setSummary((s) => ({
-        ...s,
-        depositsCents: s.depositsCents + result.amountCents,
-        depositsCount: s.depositsCount + 1,
-      }));
-    }
-  }
+  }, [data, query, typeFilter, period, methodLabel]);
 
   function closeModal() {
     setModalOpen(false);
     addFundsBtn.current?.focus();
   }
 
-  function contactSupport(reference: string) {
+  function contactSupport(reference: string | null) {
     // TODO: open an in-app ticket via the client's ticketing system.
     closeModal();
-    showToast(`Support ticket opened with reference ${reference} attached.`);
+    showToast(reference ? `Support ticket opened with reference ${reference} attached.` : 'Support ticket opened.');
   }
 
   function exportCsv() {
     const header = ['Date', 'Type', 'Method', 'Reference', 'Status', 'Amount (USD)'];
-    const lines = visible.map((t) => {
-      const sign = t.type === 'Deposit' ? '' : '-';
-      return [t.date, t.type, methodById(t.methodId).longLabel, t.id, t.status, `${sign}${(t.amountCents / 100).toFixed(2)}`];
-    });
+    const lines = visible.map((t) => [
+      t.date,
+      t.type,
+      methodLabel(t.methodId),
+      t.id,
+      t.status,
+      `${t.type === 'Deposit' ? '' : '-'}${(t.amountCents / 100).toFixed(2)}`,
+    ]);
     const csv = [header, ...lines].map((r) => r.map((v) => `"${v.replace(/"/g, '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `transactions-${DEMO_TODAY}.csv`;
+    a.download = `transactions-${todayIso()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
-  const linkedLabel = paymentMethods.map((m) => m.label).join(', ');
+  const [whole, cents] = data ? splitUSD(data.balance.availableCents) : ['—', ''];
 
   return (
     <div className="shell">
@@ -160,14 +164,14 @@ export function Dashboard({ onSignOut }: Props) {
         </div>
       </nav>
 
-      <main className="main">
+      <main className="main" aria-busy={!data}>
         <header className="page-header">
           <div>
             <h1>Overview</h1>
-            <span className="muted">Welcome back, {CLIENT_NAME}</span>
+            <span className="muted">Welcome back, {user.name}</span>
           </div>
           <div className="header-actions">
-            {IS_DEMO && <span className="demo-tag">Demo data</span>}
+            {data?.gateway.isTest && <span className="demo-tag">Test payments</span>}
             <button className="icon-btn" aria-label="Notifications">
               <BellIcon />
             </button>
@@ -180,15 +184,16 @@ export function Dashboard({ onSignOut }: Props) {
                 onClick={() => setMenuOpen((o) => !o)}
               >
                 <span className="avatar" aria-hidden="true">
-                  {CLIENT_INITIALS}
+                  {initials(user.name)}
                 </span>
                 Account
               </button>
               {menuOpen && (
                 <div className="menu" role="menu">
-                  <button role="menuitem" onClick={() => setMenuOpen(false)}>
-                    Profile
-                  </button>
+                  <div className="menu-user">
+                    <strong>{user.name}</strong>
+                    <span>{user.email}</span>
+                  </div>
                   <button role="menuitem" onClick={onSignOut}>
                     Sign out
                   </button>
@@ -198,6 +203,15 @@ export function Dashboard({ onSignOut }: Props) {
           </div>
         </header>
 
+        {loadError && (
+          <div className="banner-error" role="alert">
+            {loadError}{' '}
+            <button className="link-btn" onClick={load}>
+              Retry
+            </button>
+          </div>
+        )}
+
         <section className="balance" aria-label="Balance">
           <div>
             <span className="balance-label">Available balance · USD</span>
@@ -205,50 +219,59 @@ export function Dashboard({ onSignOut }: Props) {
               <span className="whole">{whole}</span>
               <span className="cents">{cents}</span>
             </div>
-            <div className="balance-meta num">
-              <span>
-                Pending <strong>{formatUSD(pendingCents)}</strong>
-              </span>
-              <span>
-                Total <strong>{formatUSD(totalCents)}</strong>
-              </span>
-              <span>Updated {initialBalance.updatedMinutesAgo} min ago</span>
-            </div>
+            {data && (
+              <div className="balance-meta num">
+                <span>
+                  Pending <strong>{formatUSD(data.balance.pendingCents)}</strong>
+                </span>
+                <span>
+                  Total <strong>{formatUSD(data.balance.totalCents)}</strong>
+                </span>
+                <span>Updated {minutesAgo(data.balance.asOf, now)}</span>
+              </div>
+            )}
           </div>
           <div className="balance-actions">
-            <button ref={addFundsBtn} className="btn btn-white" onClick={() => setModalOpen(true)}>
+            <button
+              ref={addFundsBtn}
+              className="btn btn-white"
+              onClick={() => setModalOpen(true)}
+              disabled={!data || data.methods.length === 0}
+            >
               <PlusIcon />
               Add funds
             </button>
-            <button className="btn btn-outline-dark" onClick={() => showToast('Withdrawals are not available in this demo yet.')}>
+            <button className="btn btn-outline-dark" onClick={() => showToast('Withdrawals are not available yet.')}>
               <ArrowUpIcon />
               Withdraw
             </button>
           </div>
         </section>
 
-        <section className="summary" aria-label="Summary">
-          <div className="stat">
-            <span className="stat-label">Deposits this month</span>
-            <span className="stat-value num">{formatUSD(summary.depositsCents)}</span>
-            <span className="stat-detail stat-detail--success">{summary.depositsCount} completed</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Withdrawals this month</span>
-            <span className="stat-value num">{formatUSD(summary.withdrawalsCents)}</span>
-            <span className="stat-detail">{summary.withdrawalsCount} completed</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Pending transactions</span>
-            <span className="stat-value num">{summary.pendingCount}</span>
-            <span className="stat-detail stat-detail--warning">Awaiting confirmation</span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Linked accounts</span>
-            <span className="stat-value num">{paymentMethods.length}</span>
-            <span className="stat-detail">{linkedLabel}</span>
-          </div>
-        </section>
+        {data && (
+          <section className="summary" aria-label="Summary">
+            <div className="stat">
+              <span className="stat-label">Deposits this month</span>
+              <span className="stat-value num">{formatUSD(data.summary.depositsCents)}</span>
+              <span className="stat-detail stat-detail--success">{data.summary.depositsCount} completed</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Withdrawals this month</span>
+              <span className="stat-value num">{formatUSD(data.summary.withdrawalsCents)}</span>
+              <span className="stat-detail">{data.summary.withdrawalsCount} completed</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Pending transactions</span>
+              <span className="stat-value num">{data.summary.pendingCount}</span>
+              <span className="stat-detail stat-detail--warning">Awaiting confirmation</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Linked accounts</span>
+              <span className="stat-value num">{data.methods.length}</span>
+              <span className="stat-detail">{data.methods.map((m) => m.label).join(', ')}</span>
+            </div>
+          </section>
+        )}
 
         <section className="panel" aria-labelledby="tx-heading">
           <div className="panel-head">
@@ -280,7 +303,7 @@ export function Dashboard({ onSignOut }: Props) {
                   <option value="all">All time</option>
                 </select>
               </label>
-              <button className="btn btn-secondary" onClick={exportCsv}>
+              <button className="btn btn-secondary" onClick={exportCsv} disabled={visible.length === 0}>
                 Export CSV
               </button>
             </div>
@@ -314,13 +337,15 @@ export function Dashboard({ onSignOut }: Props) {
                           </span>
                           <div>
                             <strong>{t.type}</strong>
-                            <small>{methodById(t.methodId).longLabel}</small>
+                            <small>{methodLabel(t.methodId)}</small>
                           </div>
                         </div>
                       </td>
                       <td className="tx-ref">{t.id}</td>
                       <td>
-                        <span className={`pill pill--${t.status.toLowerCase()}`}>{t.status}</span>
+                        <span className={`pill pill--${t.status.toLowerCase()}`} title={t.errorCode ?? undefined}>
+                          {t.status}
+                        </span>
                       </td>
                       <td className={`right tx-amount ${amountClass}`}>
                         {failed && <span className="sr-only">Failed, not counted: </span>}
@@ -329,10 +354,17 @@ export function Dashboard({ onSignOut }: Props) {
                     </tr>
                   );
                 })}
-                {visible.length === 0 && (
+                {data && visible.length === 0 && (
                   <tr>
                     <td colSpan={5} className="empty">
-                      No transactions match these filters.
+                      {data.transactions.length === 0 ? 'No transactions yet. Add funds to get started.' : 'No transactions match these filters.'}
+                    </td>
+                  </tr>
+                )}
+                {!data && !loadError && (
+                  <tr>
+                    <td colSpan={5} className="empty">
+                      Loading transactions…
                     </td>
                   </tr>
                 )}
@@ -340,21 +372,25 @@ export function Dashboard({ onSignOut }: Props) {
             </table>
           </div>
 
-          <div className="panel-foot">
-            <span>
-              Showing {visible.length} of {TOTAL_TX_COUNT + (transactions.length - initialTransactions.length)}
-            </span>
-            <a href="#transactions">View all transactions</a>
-          </div>
+          {data && (
+            <div className="panel-foot">
+              <span>
+                Showing {visible.length} of {data.totalCount}
+              </span>
+              <a href="#transactions">View all transactions</a>
+            </div>
+          )}
         </section>
       </main>
 
-      {modalOpen && (
+      {modalOpen && data && (
         <AddFundsModal
-          nextReference={nextReference}
+          methods={data.methods}
+          gateway={data.gateway}
           onClose={closeModal}
-          onCompleted={handleDeposit}
+          onSettled={load}
           onContactSupport={contactSupport}
+          onSessionExpired={onSessionExpired}
         />
       )}
 

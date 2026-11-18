@@ -1,56 +1,30 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { paymentMethods, methodById, type PaymentMethod } from '../data/demo';
+import { api, ApiError } from '../api';
 import { formatUSD, parseAmountToCents } from '../lib/format';
+import type { Overview, PaymentMethod } from '../types';
 import { AlertIcon, CheckIcon, CloseIcon, SpinnerIcon } from './Icons';
 
-export interface DepositResult {
-  ok: boolean;
-  reference: string;
-  amountCents: number;
-  methodId: string;
-  feeCents: number;
-  errorCode?: string;
-  errorMessage?: string;
-}
-
 interface Props {
-  nextReference: () => string;
+  methods: PaymentMethod[];
+  gateway: Overview['gateway'];
   onClose: () => void;
-  onCompleted: (result: DepositResult) => void;
-  onContactSupport: (reference: string) => void;
+  /** Called after the deposit settles (either way) so the dashboard can refresh. */
+  onSettled: () => void;
+  onContactSupport: (reference: string | null) => void;
+  onSessionExpired: () => void;
 }
 
 type Step =
   | { name: 'form' }
   | { name: 'processing'; amountCents: number; method: PaymentMethod }
-  | { name: 'done'; result: DepositResult };
+  | { name: 'success'; amountCents: number; reference: string; feeCents: number }
+  | { name: 'error'; message: string; code: string; reference: string | null };
 
-/**
- * Demo payment provider. Bank transfers succeed; card deposits are declined,
- * so the error state can be shown. Replace with the real provider once chosen.
- */
-function simulateProvider(amountCents: number, method: PaymentMethod, reference: string): DepositResult {
-  if (method.kind === 'card') {
-    return {
-      ok: false,
-      reference,
-      amountCents,
-      methodId: method.id,
-      feeCents: 0,
-      errorCode: 'CARD_DECLINED',
-      errorMessage: 'Your card issuer declined this deposit.',
-    };
-  }
-  return { ok: true, reference, amountCents, methodId: method.id, feeCents: 0 };
-}
-
-const PROCESSING_MS = 2400;
-
-export function AddFundsModal({ nextReference, onClose, onCompleted, onContactSupport }: Props) {
+export function AddFundsModal({ methods, gateway, onClose, onSettled, onContactSupport, onSessionExpired }: Props) {
   const [step, setStep] = useState<Step>({ name: 'form' });
   const [amount, setAmount] = useState('');
-  const [methodId, setMethodId] = useState(paymentMethods[0].id);
-  const [error, setError] = useState<string | null>(null);
+  const [methodId, setMethodId] = useState(methods[0]?.id ?? '');
+  const [formError, setFormError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -58,8 +32,7 @@ export function AddFundsModal({ nextReference, onClose, onCompleted, onContactSu
   useEffect(() => {
     const el = dialogRef.current;
     if (!el) return;
-    const target = el.querySelector<HTMLElement>('[data-autofocus]') ?? el;
-    target.focus();
+    (el.querySelector<HTMLElement>('[data-autofocus]') ?? el).focus();
   }, [step.name]);
 
   // Escape closes, except while a deposit is processing.
@@ -71,49 +44,54 @@ export function AddFundsModal({ nextReference, onClose, onCompleted, onContactSu
     return () => document.removeEventListener('keydown', onKey);
   }, [step.name, onClose]);
 
-  // Simulated processing.
+  // Indicative progress bar while waiting on the provider.
   useEffect(() => {
     if (step.name !== 'processing') return;
     setProgress(10);
-    const tick = window.setInterval(() => setProgress((p) => Math.min(p + 15, 90)), 300);
-    const done = window.setTimeout(() => {
-      const result = simulateProvider(step.amountCents, step.method, nextReference());
-      setProgress(100);
-      onCompleted(result);
-      setStep({ name: 'done', result });
-    }, PROCESSING_MS);
-    return () => {
-      window.clearInterval(tick);
-      window.clearTimeout(done);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const tick = window.setInterval(() => setProgress((p) => Math.min(p + 12, 90)), 300);
+    return () => window.clearInterval(tick);
   }, [step.name]);
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
     const cents = parseAmountToCents(amount);
-    if (cents === null) {
-      setError('Enter an amount greater than $0.00.');
-      return;
-    }
-    setError(null);
-    setStep({ name: 'processing', amountCents: cents, method: methodById(methodId) });
-  }
+    if (cents === null) return setFormError('Enter an amount greater than $0.00.');
+    const method = methods.find((m) => m.id === methodId);
+    if (!method) return setFormError('Choose where the money comes from.');
+    setFormError(null);
+    setStep({ name: 'processing', amountCents: cents, method });
 
-  function retry() {
-    setStep({ name: 'form' });
+    try {
+      const res = await api.deposit(cents, method.id);
+      setProgress(100);
+      if (res.ok) {
+        setStep({ name: 'success', amountCents: cents, reference: res.transaction.id, feeCents: res.feeCents });
+      } else {
+        setStep({ name: 'error', message: res.errorMessage, code: res.errorCode, reference: res.transaction.id });
+      }
+      onSettled();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return onSessionExpired();
+      if (err instanceof ApiError && err.status === 400) {
+        // Validation problem: back to the form with the server's message.
+        setFormError(err.message);
+        return setStep({ name: 'form' });
+      }
+      setStep({
+        name: 'error',
+        message: err instanceof ApiError ? err.message : "We couldn't confirm this deposit.",
+        code: err instanceof ApiError ? err.code : 'UNKNOWN',
+        reference: null,
+      });
+      onSettled();
+    }
   }
 
   // Keep Tab inside the dialog.
   function trapTab(e: ReactKeyboardEvent) {
     if (e.key !== 'Tab' || !dialogRef.current) return;
-    const items = dialogRef.current.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input, select, a[href]',
-    );
-    if (items.length === 0) {
-      e.preventDefault();
-      return;
-    }
+    const items = dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input, select, a[href]');
+    if (items.length === 0) return e.preventDefault();
     const first = items[0];
     const last = items[items.length - 1];
     if (e.shiftKey && document.activeElement === first) {
@@ -125,7 +103,7 @@ export function AddFundsModal({ nextReference, onClose, onCompleted, onContactSu
     }
   }
 
-  const isError = step.name === 'done' && !step.result.ok;
+  const isError = step.name === 'error';
 
   return (
     <div
@@ -162,26 +140,37 @@ export function AddFundsModal({ nextReference, onClose, onCompleted, onContactSu
                 placeholder="25,000.00"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                aria-invalid={error ? true : undefined}
-                aria-describedby={error ? 'amount-error' : undefined}
+                aria-invalid={formError ? true : undefined}
+                aria-describedby={formError ? 'amount-error' : undefined}
               />
             </label>
-            {error && (
+            {formError && (
               <span id="amount-error" className="field-error" role="alert">
-                {error}
+                {formError}
               </span>
             )}
             <label className="field">
               From
               <select className="select" value={methodId} onChange={(e) => setMethodId(e.target.value)}>
-                {paymentMethods.map((m) => (
+                {methods.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.longLabel}
                   </option>
                 ))}
               </select>
             </label>
-            <span className="small">Demo: card deposits are declined so you can see the error state.</span>
+            {gateway.isTest && (
+              <div className="test-hint">
+                <strong>Test payments, no real money moves.</strong> End the amount in{' '}
+                {gateway.triggers.map((t, i) => (
+                  <span key={t.cents}>
+                    {i > 0 && (i === gateway.triggers.length - 1 ? ' or ' : ', ')}
+                    <code>.{String(t.cents).padStart(2, '0')}</code> ({t.outcome.toLowerCase()})
+                  </span>
+                ))}{' '}
+                to simulate an error. Any other amount succeeds.
+              </div>
+            )}
             <button type="submit" className="btn btn-primary btn-block">
               Continue
             </button>
@@ -195,8 +184,8 @@ export function AddFundsModal({ nextReference, onClose, onCompleted, onContactSu
             </div>
             <h2 id="add-funds-title">Processing your deposit</h2>
             <p id="add-funds-desc">
-              We're confirming <strong className="num">{formatUSD(step.amountCents)}</strong> from{' '}
-              {step.method.longLabel}. This usually takes under a minute.
+              We're confirming <strong className="num">{formatUSD(step.amountCents)}</strong> from {step.method.longLabel}.
+              This usually takes under a minute.
             </p>
             <div
               className="progress"
@@ -212,23 +201,23 @@ export function AddFundsModal({ nextReference, onClose, onCompleted, onContactSu
           </>
         )}
 
-        {step.name === 'done' && step.result.ok && (
+        {step.name === 'success' && (
           <>
             <div className="state-icon state-icon--success">
               <CheckIcon size={30} />
             </div>
             <h2 id="add-funds-title">Funds added</h2>
             <p id="add-funds-desc">
-              <span className="num">{formatUSD(step.result.amountCents)}</span> is now in your available balance.
+              <span className="num">{formatUSD(step.amountCents)}</span> is now in your available balance.
             </p>
             <dl className="details" style={{ margin: 0 }}>
               <div>
                 <dt>Reference</dt>
-                <dd>{step.result.reference}</dd>
+                <dd>{step.reference}</dd>
               </div>
               <div>
                 <dt>Fee</dt>
-                <dd className="num">{formatUSD(step.result.feeCents)}</dd>
+                <dd className="num">{formatUSD(step.feeCents)}</dd>
               </div>
             </dl>
             <button data-autofocus type="button" className="btn btn-dark btn-block" onClick={onClose}>
@@ -237,34 +226,30 @@ export function AddFundsModal({ nextReference, onClose, onCompleted, onContactSu
           </>
         )}
 
-        {isError && step.name === 'done' && (
+        {step.name === 'error' && (
           <>
             <div className="state-icon state-icon--error">
               <AlertIcon size={30} />
             </div>
             <h2 id="add-funds-title">Transaction couldn't be completed</h2>
-            <p id="add-funds-desc">
-              {step.result.errorMessage} No money was taken from your account.
-            </p>
+            <p id="add-funds-desc">{step.message} No money was taken from your account.</p>
             <dl className="details details--error" style={{ margin: 0 }}>
               <div>
                 <dt>Error code</dt>
-                <dd>{step.result.errorCode}</dd>
+                <dd>{step.code}</dd>
               </div>
-              <div>
-                <dt>Reference</dt>
-                <dd>{step.result.reference}</dd>
-              </div>
+              {step.reference && (
+                <div>
+                  <dt>Reference</dt>
+                  <dd>{step.reference}</dd>
+                </div>
+              )}
             </dl>
             <div className="modal-actions">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => onContactSupport(step.result.reference)}
-              >
+              <button type="button" className="btn btn-secondary" onClick={() => onContactSupport(step.reference)}>
                 Contact support
               </button>
-              <button data-autofocus type="button" className="btn btn-primary" onClick={retry}>
+              <button data-autofocus type="button" className="btn btn-primary" onClick={() => setStep({ name: 'form' })}>
                 Try again
               </button>
             </div>
