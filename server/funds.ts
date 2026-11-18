@@ -5,7 +5,10 @@ import { db } from './db.ts';
 import { TEST_TRIGGERS, gateway } from './gateway.ts';
 import { HttpError, str } from './http.ts';
 import {
+  accountStatusFor,
   balanceFor,
+  enforceTransferDeadlines,
+  pendingTransferFor,
   insertTransaction,
   methodLabelsFor,
   methodsFor,
@@ -22,11 +25,30 @@ fundsRouter.use(requireUser, (_req, res, next) => {
   next();
 });
 
+/** Throws if the client may not move money right now. */
+export function assertCanMoveMoney(userId: number) {
+  enforceTransferDeadlines(userId);
+  if (accountStatusFor(userId).status === 'suspended') {
+    throw new HttpError(403, 'ACCOUNT_SUSPENDED', 'Your account is suspended. Contact support to reactivate it.');
+  }
+  const pending = pendingTransferFor(userId);
+  if (pending) {
+    throw new HttpError(
+      409,
+      'PENDING_TRANSFER',
+      `Adding and withdrawing funds are paused until transfer ${pending.reference} is received.`,
+    );
+  }
+}
+
 fundsRouter.get('/overview', (_req, res) => {
   const user = currentUser(res);
+  enforceTransferDeadlines(user.id);
   const { summary, totalCount } = summaryFor(user.id);
   res.json({
     user,
+    account: accountStatusFor(user.id),
+    pendingTransfer: pendingTransferFor(user.id),
     gateway: { name: gateway.name, isTest: gateway.isTest, triggers: gateway.isTest ? TEST_TRIGGERS : [] },
     balance: { ...balanceFor(user.id), asOf: new Date().toISOString() },
     summary,
@@ -39,6 +61,7 @@ fundsRouter.get('/overview', (_req, res) => {
 
 fundsRouter.post('/deposits', async (req, res) => {
   const user = currentUser(res);
+  assertCanMoveMoney(user.id);
   const amountCents = req.body?.amountCents;
   if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
     throw new HttpError(400, 'VALIDATION', 'Enter an amount greater than $0.00.');

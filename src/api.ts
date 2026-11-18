@@ -1,4 +1,5 @@
 import type {
+  AccountStatus,
   Balance,
   ClientDetail,
   ClientListItem,
@@ -60,6 +61,7 @@ export const api = {
     createClient: (name: string, email: string) =>
       request<{ user: User; temporaryPassword: string }>('POST', '/admin/users', { name, email }),
     client: (id: number) => request<ClientDetail>('GET', `/admin/users/${id}`),
+    reactivate: (id: number) => request<{ account: AccountStatus }>('POST', `/admin/users/${id}/reactivate`),
     resetPassword: (id: number) =>
       request<{ user: User; temporaryPassword: string }>('POST', `/admin/users/${id}/reset-password`),
     adjust: (id: number, body: { direction: 'credit' | 'debit'; amountCents: number; status: 'Completed' | 'Pending'; note: string }) =>

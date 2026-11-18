@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { api, ApiError } from '../../api';
+import { timeLeft } from '../../lib/deadline';
 import { formatUSD } from '../../lib/format';
 import type { ClientListItem, User } from '../../types';
 import { FormError } from '../AuthLayout';
@@ -17,6 +18,12 @@ export function AdminClients({ onOpen, onSessionExpired }: Props) {
   const [clients, setClients] = useState<ClientListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
 
   const load = useCallback(
     async (q: string) => {
@@ -88,6 +95,12 @@ export function AdminClients({ onOpen, onSessionExpired }: Props) {
                 <tr key={c.id}>
                   <td>
                     <strong>{c.name}</strong>
+                    {c.account.status === 'suspended' && <span className="pill pill--failed pill--inline">Suspended</span>}
+                    {c.account.status === 'active' && c.pendingTransfer && (
+                      <span className="pill pill--pending pill--inline">
+                        Transfer due {timeLeft(c.pendingTransfer.dueAt, now) ? `in ${timeLeft(c.pendingTransfer.dueAt, now)}` : 'now'}
+                      </span>
+                    )}
                     {c.mustChangePassword && <span className="pill pill--pending pill--inline">Awaiting first sign-in</span>}
                     <small className="block muted">{c.email}</small>
                   </td>

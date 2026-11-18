@@ -5,6 +5,7 @@ import { formatDate, formatUSD, splitUSD } from '../lib/format';
 import { isInflow, txSubtitle, txTitle } from '../lib/transactions';
 import type { Overview, Transaction, User } from '../types';
 import { AddFundsModal } from './AddFundsModal';
+import { AccountNotice } from './AccountNotice';
 import { TransactionTable } from './TransactionTable';
 import {
   ArrowUpIcon,
@@ -90,6 +91,23 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
     const t = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(t);
   }, [load]);
+
+  // When a transfer deadline passes, refetch: the server suspends the account at that moment.
+  const dueAt = data?.pendingTransfer?.dueAt;
+  useEffect(() => {
+    if (!dueAt) return;
+    const ms = Date.parse(dueAt) - Date.now();
+    const t = window.setTimeout(load, Math.max(ms, 0) + 1500);
+    return () => window.clearTimeout(t);
+  }, [dueAt, load]);
+
+  const suspended = data?.account.status === 'suspended';
+  const moneyBlocked = !data || suspended || data.pendingTransfer !== null;
+  const blockedReason = suspended
+    ? 'Your account is suspended.'
+    : data?.pendingTransfer
+      ? `Paused until transfer ${data.pendingTransfer.reference} is received.`
+      : undefined;
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -216,6 +234,8 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
           </div>
         )}
 
+        {data && <AccountNotice account={data.account} pendingTransfer={data.pendingTransfer} now={now} />}
+
         <section className="balance" aria-label="Balance">
           <div>
             <span className="balance-label">Available balance · USD</span>
@@ -240,15 +260,28 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
               ref={addFundsBtn}
               className="btn btn-white"
               onClick={() => setModalOpen(true)}
-              disabled={!data || data.methods.length === 0}
+              disabled={moneyBlocked || data?.methods.length === 0}
+              title={blockedReason}
+              aria-describedby={blockedReason ? 'money-blocked' : undefined}
             >
               <PlusIcon />
               Add funds
             </button>
-            <button className="btn btn-outline-dark" onClick={() => showToast('Withdrawals are not available yet.')}>
+            <button
+              className="btn btn-outline-dark"
+              onClick={() => showToast('Withdrawals are not available yet.')}
+              disabled={moneyBlocked}
+              title={blockedReason}
+              aria-describedby={blockedReason ? 'money-blocked' : undefined}
+            >
               <ArrowUpIcon />
               Withdraw
             </button>
+            {blockedReason && (
+              <span id="money-blocked" className="sr-only">
+                {blockedReason}
+              </span>
+            )}
           </div>
         </section>
 

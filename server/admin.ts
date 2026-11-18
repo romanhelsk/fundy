@@ -5,7 +5,10 @@ import { hashPassword, randomToken } from './crypto.ts';
 import { db, tx } from './db.ts';
 import { HttpError, str } from './http.ts';
 import {
+  accountStatusFor,
   balanceFor,
+  enforceTransferDeadlines,
+  pendingTransferFor,
   insertTransaction,
   methodLabelsFor,
   methodsFor,
@@ -57,8 +60,8 @@ function auditFor(userId: number) {
   return (
     db
       .prepare(
-        `SELECT a.id, a.action, a.details, a.created_at AS createdAt, u.name AS adminName
-         FROM admin_audit a JOIN users u ON u.id = a.admin_id
+        `SELECT a.id, a.action, a.details, a.created_at AS createdAt, COALESCE(u.name, 'System') AS adminName
+         FROM admin_audit a LEFT JOIN users u ON u.id = a.admin_id
          WHERE a.target_user_id = ? ORDER BY a.id DESC LIMIT 50`,
       )
       .all(userId) as unknown as { id: number; action: string; details: string; createdAt: string; adminName: string }[]
@@ -67,6 +70,7 @@ function auditFor(userId: number) {
 
 // ---------- Clients ----------
 adminRouter.get('/users', (req, res) => {
+  enforceTransferDeadlines();
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   const rows = db
     .prepare(
@@ -79,6 +83,8 @@ adminRouter.get('/users', (req, res) => {
     users: rows.map(toClient).map((u) => ({
       ...u,
       balance: balanceFor(u.id),
+      account: accountStatusFor(u.id),
+      pendingTransfer: pendingTransferFor(u.id),
       methodCount: methodsFor(u.id).length,
     })),
   });
@@ -125,10 +131,13 @@ adminRouter.post('/users/:id/reset-password', async (req, res) => {
 
 adminRouter.get('/users/:id', (req, res) => {
   const user = loadClient(req.params.id);
+  enforceTransferDeadlines(user.id);
   const { summary, totalCount } = summaryFor(user.id);
   res.json({
     user,
     balance: balanceFor(user.id),
+    account: accountStatusFor(user.id),
+    pendingTransfer: pendingTransferFor(user.id),
     summary,
     totalCount,
     methods: methodsFor(user.id),
@@ -172,6 +181,8 @@ adminRouter.post('/users/:id/adjustments', (req, res) => {
 
 adminRouter.post('/users/:id/transactions/:ref/settle', (req, res) => {
   const user = loadClient(req.params.id);
+  // A transfer whose deadline passed is already failed; it can't be completed late.
+  enforceTransferDeadlines(user.id);
   const status = req.body?.status;
   if (status !== 'Completed' && status !== 'Failed') {
     throw new HttpError(400, 'VALIDATION', 'Settle as Completed or Failed.');
@@ -236,4 +247,16 @@ adminRouter.post('/users/:id/methods/:methodId/remove', (req, res) => {
     audit(res, 'method.remove', user.id, { methodId, label: m.label });
   });
   res.json({ methods: methodsFor(user.id) });
+});
+
+// ---------- Account status ----------
+adminRouter.post('/users/:id/reactivate', (req, res) => {
+  const user = loadClient(req.params.id);
+  const before = accountStatusFor(user.id);
+  if (before.status !== 'suspended') throw new HttpError(409, 'NOT_SUSPENDED', 'This account is not suspended.');
+  tx(() => {
+    db.prepare('UPDATE users SET suspended_at = NULL, suspended_reason = NULL WHERE id = ?').run(user.id);
+    audit(res, 'account.reactivate', user.id, { reason: before.suspendedReason });
+  });
+  res.json({ account: accountStatusFor(user.id) });
 });

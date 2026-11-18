@@ -6,6 +6,7 @@ import { FormError } from '../AuthLayout';
 import { CardIcon, PlusIcon } from '../Icons';
 import { Modal } from '../Modal';
 import { TransactionTable } from '../TransactionTable';
+import { AccountNotice } from '../AccountNotice';
 import { TemporaryPasswordModal } from './TemporaryPassword';
 
 interface Props {
@@ -19,6 +20,7 @@ type Dialog =
   | 'adjust'
   | 'link'
   | 'reset'
+  | 'reactivate'
   | { resetDone: { user: User; temporaryPassword: string } }
   | { remove: PaymentMethod }
   | { settle: Transaction; status: 'Completed' | 'Failed' };
@@ -43,9 +45,21 @@ export function AdminClientDetail({ clientId, onBack, onSessionExpired }: Props)
     }
   }, [clientId, onSessionExpired]);
 
+  const [now, setNow] = useState(Date.now());
+
   useEffect(() => {
     load();
+    const t = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(t);
   }, [load]);
+
+  // Refetch when the transfer deadline passes (the server suspends the account then).
+  const dueAt = data?.pendingTransfer?.dueAt;
+  useEffect(() => {
+    if (!dueAt) return;
+    const t = window.setTimeout(load, Math.max(Date.parse(dueAt) - Date.now(), 0) + 1500);
+    return () => window.clearTimeout(t);
+  }, [dueAt, load]);
 
   /** Shared wrapper for dialog actions: run, refresh, close, announce. */
   const runAction = useCallback(
@@ -90,6 +104,8 @@ export function AdminClientDetail({ clientId, onBack, onSessionExpired }: Props)
         </button>
       </div>
 
+      <AccountNotice account={data.account} pendingTransfer={data.pendingTransfer} now={now} audience="admin" />
+
       <section className="balance" aria-label={`${user.name} balance`}>
         <div>
           <span className="balance-label">{user.name} · {user.email}</span>
@@ -112,6 +128,11 @@ export function AdminClientDetail({ clientId, onBack, onSessionExpired }: Props)
             <PlusIcon />
             Adjust balance
           </button>
+          {data.account.status === 'suspended' && (
+            <button className="btn btn-white" onClick={() => setDialog('reactivate')}>
+              Reactivate account
+            </button>
+          )}
           <button className="btn btn-outline-dark" onClick={() => setDialog('reset')}>
             Reset password
           </button>
@@ -206,6 +227,15 @@ export function AdminClientDetail({ clientId, onBack, onSessionExpired }: Props)
           }
         />
       )}
+      {dialog === 'reactivate' && (
+        <ConfirmModal
+          title="Reactivate account?"
+          body={`${user.name} will be able to add and withdraw funds again. The expired transfer stays failed; create a new pending credit if they still need to send it.`}
+          confirmLabel="Reactivate"
+          onClose={() => setDialog(null)}
+          onConfirm={() => runAction(() => api.admin.reactivate(user.id), 'Account reactivated.')}
+        />
+      )}
       {dialog === 'reset' && (
         <ConfirmModal
           title="Reset password?"
@@ -288,6 +318,10 @@ function describeAudit(a: AuditEntry): string {
   switch (a.action) {
     case 'user.create':
       return `Created the account (${d.email})`;
+    case 'transaction.expire':
+      return `Transfer ${d.reference} (${amount}) wasn't received within 12 hours and was marked failed${d.suspended ? '; account suspended' : ''}`;
+    case 'account.reactivate':
+      return 'Reactivated the account';
     case 'user.reset_password':
       return 'Reset the password (temporary password issued, sessions revoked)';
     case 'balance.credit':
@@ -360,7 +394,7 @@ function AdjustModal({
             Status
             <select className="select" value={status} onChange={(e) => setStatus(e.target.value as 'Completed' | 'Pending')}>
               <option value="Completed">Completed: add to available balance now</option>
-              <option value="Pending">Pending: show as pending until settled</option>
+              <option value="Pending">Pending: client has 12 hours to send the transfer</option>
             </select>
           </label>
         )}

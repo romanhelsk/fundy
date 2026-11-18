@@ -43,8 +43,25 @@ export interface Summary {
   pendingCount: number;
 }
 
+export interface PendingTransfer {
+  reference: string;
+  amountCents: number;
+  /** ISO time. If the transfer isn't received by then, the account is suspended. */
+  dueAt: string;
+}
+
+export interface AccountStatus {
+  status: 'active' | 'suspended';
+  suspendedAt: string | null;
+  suspendedReason: 'TRANSFER_NOT_RECEIVED' | null;
+  expiredReference: string | null;
+}
+
 export interface Overview {
   user: User;
+  account: AccountStatus;
+  /** While set, adding and withdrawing funds are blocked. */
+  pendingTransfer: PendingTransfer | null;
   gateway: { name: string; isTest: boolean; triggers: { cents: number; outcome: string }[] };
   balance: Balance & { asOf: string };
   summary: Summary;
@@ -68,6 +85,8 @@ export type DepositResponse =
 export interface ClientListItem extends User {
   createdAt: string;
   balance: Balance;
+  account: AccountStatus;
+  pendingTransfer: PendingTransfer | null;
   methodCount: number;
 }
 
@@ -82,6 +101,8 @@ export interface AuditEntry {
 export interface ClientDetail {
   user: User & { createdAt: string };
   balance: Balance;
+  account: AccountStatus;
+  pendingTransfer: PendingTransfer | null;
   summary: Summary;
   totalCount: number;
   methods: PaymentMethod[];

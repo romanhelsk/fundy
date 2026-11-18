@@ -1070,3 +1070,35 @@ button {
   text-align: right;
   overflow-wrap: anywhere;
 }
+
+/* ---------- Account notices (pending transfer / suspended) ---------- */
+.account-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 20px;
+  border-radius: var(--radius-lg);
+  border: 1px solid;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.account-notice > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.account-notice p {
+  margin: 4px 0 0;
+}
+.account-notice--warning {
+  background: var(--warning-bg);
+  border-color: #fcd34d;
+  color: var(--warning-fg);
+}
+.account-notice--danger {
+  background: var(--danger-bg);
+  border-color: #fca5a5;
+  color: var(--danger-fg);
+}
+.balance .btn:disabled {
+  opacity: 0.45;
+}

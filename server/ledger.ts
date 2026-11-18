@@ -1,4 +1,5 @@
-import { db } from './db.ts';
+import { config } from './config.ts';
+import { db, tx } from './db.ts';
 
 export type TxType = 'Deposit' | 'Withdrawal' | 'Credit' | 'Debit';
 export type TxStatus = 'Pending' | 'Completed' | 'Failed';
@@ -130,14 +131,106 @@ export function insertTransaction(t: {
   note?: string | null;
   createdBy?: number | null;
 }): { seq: number; reference: string } {
+  // Pending money-in starts the transfer deadline.
+  const isInflow = t.type === 'Deposit' || t.type === 'Credit';
+  const dueAt = t.status === 'Pending' && isInflow ? new Date(Date.now() + config.transferWindowMs).toISOString() : null;
   const r = db
     .prepare(
-      `INSERT INTO transactions (user_id, date, type, method_id, status, amount_cents, note, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO transactions (user_id, date, type, method_id, status, amount_cents, note, created_by, due_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(t.userId, today(), t.type, t.methodId ?? null, t.status, t.amountCents, t.note ?? null, t.createdBy ?? null);
+    .run(t.userId, today(), t.type, t.methodId ?? null, t.status, t.amountCents, t.note ?? null, t.createdBy ?? null, dueAt);
   const seq = Number(r.lastInsertRowid);
   const reference = `TX-${81000 + seq}`;
   db.prepare('UPDATE transactions SET ref = ? WHERE seq = ?').run(reference, seq);
   return { seq, reference };
+}
+
+// ---------- Transfer deadlines & suspension ----------
+
+export interface PendingTransfer {
+  reference: string;
+  amountCents: number;
+  dueAt: string; // ISO
+}
+
+/** The pending money-in with the nearest deadline, if any. While one exists, add/withdraw is blocked. */
+export function pendingTransferFor(userId: number): PendingTransfer | null {
+  const row = db
+    .prepare(
+      `SELECT ref, amount_cents, due_at FROM transactions
+       WHERE user_id = ? AND status = 'Pending' AND type IN ('Deposit', 'Credit') AND due_at IS NOT NULL
+       ORDER BY due_at ASC LIMIT 1`,
+    )
+    .get(userId) as { ref: string; amount_cents: number; due_at: string } | undefined;
+  return row ? { reference: row.ref, amountCents: row.amount_cents, dueAt: row.due_at } : null;
+}
+
+export type SuspensionReason = 'TRANSFER_NOT_RECEIVED';
+
+export interface AccountStatus {
+  status: 'active' | 'suspended';
+  suspendedAt: string | null;
+  suspendedReason: SuspensionReason | null;
+  /** The transfer that expired and caused the suspension, if that was the reason. */
+  expiredReference: string | null;
+}
+
+export function accountStatusFor(userId: number): AccountStatus {
+  const row = db.prepare('SELECT suspended_at, suspended_reason FROM users WHERE id = ?').get(userId) as {
+    suspended_at: string | null;
+    suspended_reason: SuspensionReason | null;
+  };
+  if (!row?.suspended_at) return { status: 'active', suspendedAt: null, suspendedReason: null, expiredReference: null };
+  const expired = db
+    .prepare(
+      `SELECT ref FROM transactions WHERE user_id = ? AND status = 'Failed' AND error_code = 'TRANSFER_EXPIRED'
+       ORDER BY seq DESC LIMIT 1`,
+    )
+    .get(userId) as { ref: string } | undefined;
+  return {
+    status: 'suspended',
+    suspendedAt: row.suspended_at,
+    suspendedReason: row.suspended_reason,
+    expiredReference: expired?.ref ?? null,
+  };
+}
+
+/**
+ * Fails every pending money-in whose deadline has passed and suspends the
+ * account. Runs on a timer and before any read or write that depends on it,
+ * so the state is never stale. Returns how many transactions expired.
+ */
+export function enforceTransferDeadlines(userId?: number): number {
+  const now = new Date().toISOString();
+  const expired = db
+    .prepare(
+      `SELECT seq, ref, user_id, amount_cents FROM transactions
+       WHERE status = 'Pending' AND type IN ('Deposit', 'Credit') AND due_at IS NOT NULL AND due_at <= ?
+       ${userId === undefined ? '' : 'AND user_id = ?'}`,
+    )
+    .all(...(userId === undefined ? [now] : [now, userId])) as unknown as {
+    seq: number;
+    ref: string;
+    user_id: number;
+    amount_cents: number;
+  }[];
+  if (expired.length === 0) return 0;
+
+  tx(() => {
+    for (const t of expired) {
+      db.prepare("UPDATE transactions SET status = 'Failed', error_code = 'TRANSFER_EXPIRED' WHERE seq = ?").run(t.seq);
+      const wasActive =
+        db
+          .prepare("UPDATE users SET suspended_at = ?, suspended_reason = 'TRANSFER_NOT_RECEIVED' WHERE id = ? AND suspended_at IS NULL")
+          .run(now, t.user_id).changes > 0;
+      db.prepare('INSERT INTO admin_audit (admin_id, target_user_id, action, details) VALUES (NULL, ?, ?, ?)').run(
+        t.user_id,
+        'transaction.expire',
+        JSON.stringify({ reference: t.ref, amountCents: t.amount_cents, suspended: wasActive }),
+      );
+    }
+  });
+  console.log(`Transfer deadline passed for ${expired.map((t) => t.ref).join(', ')}; account(s) suspended.`);
+  return expired.length;
 }

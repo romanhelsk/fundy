@@ -117,6 +117,30 @@ const migrations: string[] = [
   UPDATE users SET must_change_password = 1
     WHERE id IN (SELECT target_user_id FROM admin_audit WHERE action = 'user.create');
   `,
+  // 3: 12-hour transfer deadline for pending money-in, account suspension,
+  //    and audit entries written by the system (admin_id NULL)
+  `
+  ALTER TABLE users ADD COLUMN suspended_at TEXT;
+  ALTER TABLE users ADD COLUMN suspended_reason TEXT;
+  ALTER TABLE transactions ADD COLUMN due_at TEXT;
+  -- Existing pending items get a fresh clock from now, so nobody is suspended on upgrade.
+  UPDATE transactions SET due_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+12 hours')
+    WHERE status = 'Pending' AND type IN ('Deposit', 'Credit');
+  CREATE INDEX tx_pending_due ON transactions (status, due_at);
+
+  CREATE TABLE admin_audit_v3 (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id        INTEGER REFERENCES users(id),
+    target_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    action          TEXT NOT NULL,
+    details         TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  INSERT INTO admin_audit_v3 (id, admin_id, target_user_id, action, details, created_at)
+    SELECT id, admin_id, target_user_id, action, details, created_at FROM admin_audit;
+  DROP TABLE admin_audit;
+  ALTER TABLE admin_audit_v3 RENAME TO admin_audit;
+  `,
 ];
 
 const current = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);

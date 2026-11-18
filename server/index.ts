@@ -7,6 +7,7 @@ import { config } from './config.ts';
 import { fundsRouter } from './funds.ts';
 import { gateway } from './gateway.ts';
 import { HttpError, errorHandler, originGuard } from './http.ts';
+import { enforceTransferDeadlines } from './ledger.ts';
 import { seed } from './seed.ts';
 
 await seed();
@@ -43,6 +44,9 @@ if (existsSync(dist)) {
 app.use(errorHandler);
 
 setInterval(pruneExpired, 15 * 60 * 1000).unref();
+// Suspend accounts whose transfer deadline passed, even if nobody is looking.
+enforceTransferDeadlines();
+setInterval(() => enforceTransferDeadlines(), 60 * 1000).unref();
 
 app.listen(config.port, () => {
   console.log(`API listening on http://localhost:${config.port} (payment gateway: ${gateway.name})`);
