@@ -49,6 +49,8 @@ export const api = {
   verify: (challengeId: string, code: string) => request<{ user: User }>('POST', '/auth/verify', { challengeId, code }),
   resend: (challengeId: string) => request<{ ok: true }>('POST', '/auth/resend', { challengeId }),
   logout: () => request<{ ok: true }>('POST', '/auth/logout'),
+  changePassword: (newPassword: string, currentPassword?: string) =>
+    request<{ user: User }>('POST', '/auth/change-password', { newPassword, currentPassword }),
   overview: () => request<Overview>('GET', '/overview'),
   deposit: (amountCents: number, methodId: string) =>
     request<DepositResponse>('POST', '/deposits', { amountCents, methodId }),

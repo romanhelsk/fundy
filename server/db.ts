@@ -111,6 +111,12 @@ const migrations: string[] = [
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
   );
   `,
+  // 2: force a password change on first sign-in for accounts created with a temporary password
+  `
+  ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;
+  UPDATE users SET must_change_password = 1
+    WHERE id IN (SELECT target_user_id FROM admin_audit WHERE action = 'user.create');
+  `,
 ];
 
 const current = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);

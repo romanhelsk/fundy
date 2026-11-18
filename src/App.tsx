@@ -3,6 +3,7 @@ import { api } from './api';
 import { AdminApp } from './components/admin/AdminApp';
 import { Dashboard } from './components/Dashboard';
 import { Login } from './components/Login';
+import { SetPassword } from './components/SetPassword';
 import { Signup } from './components/Signup';
 import { Verify } from './components/Verify';
 import type { MfaChallenge, User } from './types';
@@ -49,6 +50,16 @@ export function App() {
         />
       );
     case 'app':
+      if (view.user.mustChangePassword) {
+        return (
+          <SetPassword
+            user={view.user}
+            onDone={(user) => setView({ name: 'app', user })}
+            onSignOut={signOut}
+            onSessionExpired={() => toLogin('Your session has expired. Please sign in again.')}
+          />
+        );
+      }
       if (view.user.role === 'admin') {
         return (
           <AdminApp

@@ -12,10 +12,27 @@ export interface User {
   email: string;
   name: string;
   role: Role;
+  /** Set for accounts created with a temporary password until the user picks their own. */
+  mustChangePassword: boolean;
 }
 
-interface UserRow extends User {
+interface UserRow {
+  id: number;
+  email: string;
+  name: string;
+  role: Role;
+  must_change_password: number;
   password_hash: string;
+}
+
+const USER_COLUMNS = 'id, email, name, role, must_change_password, password_hash';
+
+function toUser(r: UserRow): User {
+  return { id: r.id, email: r.email, name: r.name, role: r.role, mustChangePassword: r.must_change_password === 1 };
+}
+
+function loadUserRow(id: number): UserRow {
+  return db.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`).get(id) as unknown as UserRow;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -50,7 +67,7 @@ function recordFailure(key: string) {
 
 // ---------- Helpers ----------
 function publicUser(u: User): User {
-  return { id: u.id, email: u.email, name: u.name, role: u.role };
+  return { id: u.id, email: u.email, name: u.name, role: u.role, mustChangePassword: u.mustChangePassword };
 }
 
 function maskEmail(email: string) {
@@ -109,22 +126,36 @@ export function createTestPaymentMethods(userId: number, last4 = { bank: '4242',
 }
 
 // ---------- Middleware ----------
-export function requireUser(req: Request, res: Response, next: NextFunction) {
-  const token = readCookie(req, config.session.cookieName);
-  if (!token) return next(new HttpError(401, 'UNAUTHENTICATED', 'Please sign in.'));
-  const row = db
-    .prepare(
-      `SELECT u.id, u.email, u.name, u.role FROM sessions s JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ? AND s.expires_at > ?`,
-    )
-    .get(sha256(token), Date.now()) as User | undefined;
-  if (!row) {
-    clearSessionCookie(res);
-    return next(new HttpError(401, 'UNAUTHENTICATED', 'Your session has expired. Please sign in again.'));
-  }
-  res.locals.user = row;
-  next();
+function authenticate(allowPendingPasswordChange: boolean) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const token = readCookie(req, config.session.cookieName);
+    if (!token) return next(new HttpError(401, 'UNAUTHENTICATED', 'Please sign in.'));
+    const row = db
+      .prepare(
+        `SELECT u.id, u.email, u.name, u.role, u.must_change_password, u.password_hash
+         FROM sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.token_hash = ? AND s.expires_at > ?`,
+      )
+      .get(sha256(token), Date.now()) as UserRow | undefined;
+    if (!row) {
+      clearSessionCookie(res);
+      return next(new HttpError(401, 'UNAUTHENTICATED', 'Your session has expired. Please sign in again.'));
+    }
+    const user = toUser(row);
+    // Until a temporary password is replaced, the session can do nothing else.
+    if (user.mustChangePassword && !allowPendingPasswordChange) {
+      return next(new HttpError(403, 'PASSWORD_CHANGE_REQUIRED', 'Set a new password to continue.'));
+    }
+    res.locals.user = user;
+    res.locals.sessionTokenHash = sha256(token);
+    next();
+  };
 }
+
+/** Signed in, with a password the user chose. Use on every API route. */
+export const requireUser = authenticate(false);
+/** Signed in, possibly still on a temporary password (session check and password change only). */
+const requireSession = authenticate(true);
 
 export function currentUser(res: Response): User {
   return res.locals.user as User;
@@ -158,7 +189,7 @@ authRouter.post('/register', async (req, res) => {
     const result = db.prepare('INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)').run(email, name, passwordHash);
     const id = Number(result.lastInsertRowid);
     createTestPaymentMethods(id);
-    return { id, email, name, role: 'client' as const };
+    return { id, email, name, role: 'client' as const, mustChangePassword: false };
   });
   // New accounts verify their email with the same code flow before the first session.
   res.status(201).json(await startChallenge(user, false));
@@ -171,16 +202,14 @@ authRouter.post('/login', async (req, res) => {
   const key = throttleKey(req, email);
   assertNotThrottled(key);
 
-  const user = db.prepare('SELECT id, email, name, role, password_hash FROM users WHERE email = ?').get(email) as
-    | UserRow
-    | undefined;
+  const user = db.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE email = ?`).get(email) as UserRow | undefined;
   const ok = await verifyPassword(password, user?.password_hash ?? DUMMY_HASH);
   if (!user || !ok) {
     recordFailure(key);
     throw new HttpError(401, 'INVALID_CREDENTIALS', 'Incorrect email or password.');
   }
   failures.delete(key);
-  res.json(await startChallenge(publicUser(user), remember));
+  res.json(await startChallenge(toUser(user), remember));
 });
 
 interface ChallengeRow {
@@ -218,8 +247,7 @@ authRouter.post('/verify', (req, res) => {
   }
   db.prepare('DELETE FROM mfa_challenges WHERE id = ?').run(challenge.id);
   createSession(res, challenge.user_id, challenge.remember === 1);
-  const user = db.prepare('SELECT id, email, name, role FROM users WHERE id = ?').get(challenge.user_id) as unknown as User;
-  res.json({ user: publicUser(user) });
+  res.json({ user: toUser(loadUserRow(challenge.user_id)) });
 });
 
 authRouter.post('/resend', async (req, res) => {
@@ -236,8 +264,7 @@ authRouter.post('/resend', async (req, res) => {
     now + config.mfa.codeTtlMs,
     challenge.id,
   );
-  const user = db.prepare('SELECT id, email, name, role FROM users WHERE id = ?').get(challenge.user_id) as unknown as User;
-  await sendVerificationCode(user, code);
+  await sendVerificationCode(toUser(loadUserRow(challenge.user_id)), code);
   res.json({ ok: true });
 });
 
@@ -248,8 +275,40 @@ authRouter.post('/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-authRouter.get('/session', requireUser, (_req, res) => {
+authRouter.get('/session', requireSession, (_req, res) => {
   res.json({ user: publicUser(currentUser(res)) });
+});
+
+/**
+ * Sets a new password. On first sign-in with a temporary password the user
+ * just proved it (password + emailed code), so only the new one is needed;
+ * otherwise the current password is required.
+ */
+authRouter.post('/change-password', requireSession, async (req, res) => {
+  const user = currentUser(res);
+  const row = loadUserRow(user.id);
+  const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+
+  if (!user.mustChangePassword) {
+    const current = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+    if (!(await verifyPassword(current, row.password_hash))) {
+      throw new HttpError(401, 'INVALID_CREDENTIALS', 'Your current password is incorrect.');
+    }
+  }
+  if (newPassword.length < MIN_PASSWORD || newPassword.length > 200) {
+    throw new HttpError(400, 'WEAK_PASSWORD', `Use at least ${MIN_PASSWORD} characters for your password.`);
+  }
+  if (await verifyPassword(newPassword, row.password_hash)) {
+    throw new HttpError(400, 'SAME_PASSWORD', 'Choose a password different from your current one.');
+  }
+
+  const hash = await hashPassword(newPassword);
+  tx(() => {
+    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(hash, user.id);
+    // Sign out every other session; keep this one.
+    db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').run(user.id, res.locals.sessionTokenHash);
+  });
+  res.json({ user: toUser(loadUserRow(user.id)) });
 });
 
 /** Periodically drop expired sessions and challenges. */

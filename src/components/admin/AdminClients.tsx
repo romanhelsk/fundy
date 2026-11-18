@@ -87,6 +87,7 @@ export function AdminClients({ onOpen, onSessionExpired }: Props) {
                 <tr key={c.id}>
                   <td>
                     <strong>{c.name}</strong>
+                    {c.mustChangePassword && <span className="pill pill--pending pill--inline">Awaiting first sign-in</span>}
                     <small className="block muted">{c.email}</small>
                   </td>
                   <td className="muted">{c.methodCount}</td>
@@ -173,7 +174,7 @@ function CreateClientModal({
 
   if (created) {
     return (
-      <Modal title="Client created" onClose={onClose} description={<>Share this temporary password with {created.user.name} through a secure channel. It won't be shown again.</>}>
+      <Modal title="Client created" onClose={onClose} description={<>Share this temporary password with {created.user.name} through a secure channel. It won't be shown again, and they'll be asked to set their own password the first time they sign in.</>}>
         <dl className="details" style={{ margin: 0 }}>
           <div>
             <dt>Email</dt>

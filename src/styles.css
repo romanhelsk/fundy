@@ -1059,3 +1059,9 @@ button {
 .segmented input {
   accent-color: var(--accent);
 }
+.pill--inline {
+  margin-left: 8px;
+  height: 20px;
+  font-size: 11px;
+  vertical-align: middle;
+}

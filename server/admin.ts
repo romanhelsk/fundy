@@ -27,15 +27,20 @@ function audit(res: Response, action: string, targetUserId: number | null, detai
   );
 }
 
+type ClientRow = Omit<User, 'mustChangePassword'> & { createdAt: string; mustChange: number };
+const CLIENT_COLUMNS = 'id, email, name, role, must_change_password AS mustChange, created_at AS createdAt';
+
+function toClient({ mustChange, ...rest }: ClientRow): User & { createdAt: string } {
+  return { ...rest, mustChangePassword: mustChange === 1 };
+}
+
 function loadClient(idParam: unknown): User & { createdAt: string } {
   const id = Number(idParam);
   const row = Number.isSafeInteger(id)
-    ? (db
-        .prepare("SELECT id, email, name, role, created_at AS createdAt FROM users WHERE id = ? AND role = 'client'")
-        .get(id) as (User & { createdAt: string }) | undefined)
+    ? (db.prepare(`SELECT ${CLIENT_COLUMNS} FROM users WHERE id = ? AND role = 'client'`).get(id) as ClientRow | undefined)
     : undefined;
   if (!row) throw new HttpError(404, 'USER_NOT_FOUND', 'Client not found.');
-  return row;
+  return toClient(row);
 }
 
 function amount(value: unknown): number {
@@ -65,13 +70,13 @@ adminRouter.get('/users', (req, res) => {
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   const rows = db
     .prepare(
-      `SELECT id, email, name, role, created_at AS createdAt FROM users
+      `SELECT ${CLIENT_COLUMNS} FROM users
        WHERE role = 'client' AND ($q = '' OR name LIKE $like OR email LIKE $like)
        ORDER BY created_at DESC, id DESC LIMIT 200`,
     )
-    .all({ $q: q, $like: `%${q}%` }) as unknown as (User & { createdAt: string })[];
+    .all({ $q: q, $like: `%${q}%` }) as unknown as ClientRow[];
   res.json({
-    users: rows.map((u) => ({
+    users: rows.map(toClient).map((u) => ({
       ...u,
       balance: balanceFor(u.id),
       methodCount: methodsFor(u.id).length,
@@ -91,8 +96,9 @@ adminRouter.post('/users', async (req, res) => {
   const passwordHash = await hashPassword(temporaryPassword);
   const id = tx(() => {
     const userId = Number(
-      db.prepare("INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'client')").run(email, name, passwordHash)
-        .lastInsertRowid,
+      db
+        .prepare("INSERT INTO users (email, name, password_hash, role, must_change_password) VALUES (?, ?, ?, 'client', 1)")
+        .run(email, name, passwordHash).lastInsertRowid,
     );
     audit(res, 'user.create', userId, { email, name });
     return userId;

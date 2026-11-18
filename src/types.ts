@@ -7,6 +7,8 @@ export interface User {
   email: string;
   name: string;
   role: 'client' | 'admin';
+  /** Still on an admin-issued temporary password; must set a new one before anything else. */
+  mustChangePassword: boolean;
 }
 
 export interface PaymentMethod {
