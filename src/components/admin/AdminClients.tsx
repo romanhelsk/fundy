@@ -5,6 +5,7 @@ import type { ClientListItem, User } from '../../types';
 import { FormError } from '../AuthLayout';
 import { PlusIcon } from '../Icons';
 import { Modal } from '../Modal';
+import { TemporaryPasswordModal } from './TemporaryPassword';
 
 interface Props {
   onOpen: (id: number) => void;
@@ -147,7 +148,6 @@ function CreateClientModal({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<{ user: User; temporaryPassword: string } | null>(null);
-  const [copied, setCopied] = useState(false);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -166,34 +166,15 @@ function CreateClientModal({
     }
   }
 
-  async function copy() {
-    if (!created) return;
-    await navigator.clipboard.writeText(created.temporaryPassword).catch(() => undefined);
-    setCopied(true);
-  }
-
   if (created) {
     return (
-      <Modal title="Client created" onClose={onClose} description={<>Share this temporary password with {created.user.name} through a secure channel. It won't be shown again, and they'll be asked to set their own password the first time they sign in.</>}>
-        <dl className="details" style={{ margin: 0 }}>
-          <div>
-            <dt>Email</dt>
-            <dd>{created.user.email}</dd>
-          </div>
-          <div>
-            <dt>Temporary password</dt>
-            <dd className="mono">{created.temporaryPassword}</dd>
-          </div>
-        </dl>
-        <div className="modal-actions">
-          <button type="button" className="btn btn-secondary" onClick={copy} data-autofocus>
-            {copied ? 'Copied' : 'Copy password'}
-          </button>
-          <button type="button" className="btn btn-primary" onClick={() => onOpen(created.user.id)}>
-            Open client
-          </button>
-        </div>
-      </Modal>
+      <TemporaryPasswordModal
+        title="Client created"
+        user={created.user}
+        temporaryPassword={created.temporaryPassword}
+        onClose={onClose}
+        primary={{ label: 'Open client', onClick: () => onOpen(created.user.id) }}
+      />
     );
   }
 

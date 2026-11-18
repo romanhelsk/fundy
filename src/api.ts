@@ -60,6 +60,8 @@ export const api = {
     createClient: (name: string, email: string) =>
       request<{ user: User; temporaryPassword: string }>('POST', '/admin/users', { name, email }),
     client: (id: number) => request<ClientDetail>('GET', `/admin/users/${id}`),
+    resetPassword: (id: number) =>
+      request<{ user: User; temporaryPassword: string }>('POST', `/admin/users/${id}/reset-password`),
     adjust: (id: number, body: { direction: 'credit' | 'debit'; amountCents: number; status: 'Completed' | 'Pending'; note: string }) =>
       request<{ transaction: Transaction; balance: Balance }>('POST', `/admin/users/${id}/adjustments`, body),
     settle: (id: number, ref: string, status: 'Completed' | 'Failed') =>

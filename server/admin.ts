@@ -106,6 +106,23 @@ adminRouter.post('/users', async (req, res) => {
   res.status(201).json({ user: loadClient(id), temporaryPassword });
 });
 
+/**
+ * Issues a new temporary password. The client must set their own on next
+ * sign-in, and every existing session and pending sign-in code is revoked.
+ */
+adminRouter.post('/users/:id/reset-password', async (req, res) => {
+  const user = loadClient(req.params.id);
+  const temporaryPassword = randomToken(12);
+  const passwordHash = await hashPassword(temporaryPassword);
+  tx(() => {
+    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(passwordHash, user.id);
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+    db.prepare('DELETE FROM mfa_challenges WHERE user_id = ?').run(user.id);
+    audit(res, 'user.reset_password', user.id, {});
+  });
+  res.json({ user: loadClient(user.id), temporaryPassword });
+});
+
 adminRouter.get('/users/:id', (req, res) => {
   const user = loadClient(req.params.id);
   const { summary, totalCount } = summaryFor(user.id);

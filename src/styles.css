@@ -1065,3 +1065,8 @@ button {
   font-size: 11px;
   vertical-align: middle;
 }
+.details dd {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}

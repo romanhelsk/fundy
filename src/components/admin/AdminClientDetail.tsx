@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { api, ApiError } from '../../api';
 import { formatUSD, parseAmountToCents } from '../../lib/format';
-import type { AuditEntry, ClientDetail, PaymentMethod, Transaction } from '../../types';
+import type { AuditEntry, ClientDetail, PaymentMethod, Transaction, User } from '../../types';
 import { FormError } from '../AuthLayout';
 import { CardIcon, PlusIcon } from '../Icons';
 import { Modal } from '../Modal';
 import { TransactionTable } from '../TransactionTable';
+import { TemporaryPasswordModal } from './TemporaryPassword';
 
 interface Props {
   clientId: number;
@@ -13,7 +14,14 @@ interface Props {
   onSessionExpired: () => void;
 }
 
-type Dialog = null | 'adjust' | 'link' | { remove: PaymentMethod } | { settle: Transaction; status: 'Completed' | 'Failed' };
+type Dialog =
+  | null
+  | 'adjust'
+  | 'link'
+  | 'reset'
+  | { resetDone: { user: User; temporaryPassword: string } }
+  | { remove: PaymentMethod }
+  | { settle: Transaction; status: 'Completed' | 'Failed' };
 
 function errorMessage(err: unknown, fallback: string) {
   return err instanceof ApiError ? err.message : fallback;
@@ -96,12 +104,16 @@ export function AdminClientDetail({ clientId, onBack, onSessionExpired }: Props)
               Total <strong>{formatUSD(balance.totalCents)}</strong>
             </span>
             <span>Client since {user.createdAt.slice(0, 10)}</span>
+            {user.mustChangePassword && <span>Awaiting first sign-in</span>}
           </div>
         </div>
         <div className="balance-actions">
           <button className="btn btn-white" onClick={() => setDialog('adjust')}>
             <PlusIcon />
             Adjust balance
+          </button>
+          <button className="btn btn-outline-dark" onClick={() => setDialog('reset')}>
+            Reset password
           </button>
         </div>
       </section>
@@ -194,6 +206,36 @@ export function AdminClientDetail({ clientId, onBack, onSessionExpired }: Props)
           }
         />
       )}
+      {dialog === 'reset' && (
+        <ConfirmModal
+          title="Reset password?"
+          body={`${user.name} gets a new temporary password and must set their own at the next sign-in. Their current password stops working and they're signed out everywhere.`}
+          confirmLabel="Reset password"
+          onClose={() => setDialog(null)}
+          onConfirm={async () => {
+            try {
+              const result = await api.admin.resetPassword(user.id);
+              setDialog({ resetDone: result });
+              await load();
+              return null;
+            } catch (err) {
+              if (err instanceof ApiError && err.status === 401) {
+                onSessionExpired();
+                return null;
+              }
+              return errorMessage(err, 'Could not reset the password.');
+            }
+          }}
+        />
+      )}
+      {dialog && typeof dialog === 'object' && 'resetDone' in dialog && (
+        <TemporaryPasswordModal
+          title="Password reset"
+          user={dialog.resetDone.user}
+          temporaryPassword={dialog.resetDone.temporaryPassword}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog === 'link' && (
         <LinkMethodModal
           onClose={() => setDialog(null)}
@@ -246,6 +288,8 @@ function describeAudit(a: AuditEntry): string {
   switch (a.action) {
     case 'user.create':
       return `Created the account (${d.email})`;
+    case 'user.reset_password':
+      return 'Reset the password (temporary password issued, sessions revoked)';
     case 'balance.credit':
       return `Credited ${amount}${d.status === 'Pending' ? ' as pending' : ''}: ${d.note} (${d.reference})`;
     case 'balance.debit':
