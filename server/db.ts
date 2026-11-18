@@ -73,3 +73,51 @@ export function tx<T>(fn: () => T): T {
     throw err;
   }
 }
+
+// ---------- Migrations (tracked with PRAGMA user_version) ----------
+const migrations: string[] = [
+  // 1: roles, admin balance adjustments, soft-removed payment methods, audit log
+  `
+  ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'client' CHECK (role IN ('client', 'admin'));
+  ALTER TABLE payment_methods ADD COLUMN removed_at TEXT;
+
+  CREATE TABLE transactions_v1 (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ref           TEXT UNIQUE,
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date          TEXT NOT NULL,
+    type          TEXT NOT NULL CHECK (type IN ('Deposit', 'Withdrawal', 'Credit', 'Debit')),
+    method_id     TEXT REFERENCES payment_methods(id),
+    status        TEXT NOT NULL CHECK (status IN ('Pending', 'Completed', 'Failed')),
+    amount_cents  INTEGER NOT NULL CHECK (amount_cents > 0),
+    error_code    TEXT,
+    note          TEXT,
+    created_by    INTEGER REFERENCES users(id),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK (type IN ('Credit', 'Debit') OR method_id IS NOT NULL)
+  );
+  INSERT INTO transactions_v1 (seq, ref, user_id, date, type, method_id, status, amount_cents, error_code, created_at)
+    SELECT seq, ref, user_id, date, type, method_id, status, amount_cents, error_code, created_at FROM transactions;
+  DROP TABLE transactions;
+  ALTER TABLE transactions_v1 RENAME TO transactions;
+  CREATE INDEX tx_user_date ON transactions (user_id, date DESC, seq DESC);
+
+  CREATE TABLE admin_audit (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id        INTEGER NOT NULL REFERENCES users(id),
+    target_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    action          TEXT NOT NULL,
+    details         TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
+];
+
+const current = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+for (let v = current; v < migrations.length; v++) {
+  tx(() => {
+    db.exec(migrations[v]);
+    db.exec(`PRAGMA user_version = ${v + 1}`);
+  });
+  console.log(`Applied database migration ${v + 1}`);
+}

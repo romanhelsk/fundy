@@ -4,100 +4,36 @@ import { config } from './config.ts';
 import { db } from './db.ts';
 import { TEST_TRIGGERS, gateway } from './gateway.ts';
 import { HttpError, str } from './http.ts';
+import {
+  balanceFor,
+  insertTransaction,
+  methodLabelsFor,
+  methodsFor,
+  summaryFor,
+  transactionBySeq,
+  transactionsFor,
+  type MethodRow,
+} from './ledger.ts';
 
 export const fundsRouter = Router();
-fundsRouter.use(requireUser);
-
-interface MethodRow {
-  id: string;
-  kind: 'bank' | 'card';
-  label: string;
-  long_label: string;
-}
-
-interface TxRow {
-  ref: string;
-  date: string;
-  type: 'Deposit' | 'Withdrawal';
-  method_id: string;
-  status: 'Pending' | 'Completed' | 'Failed';
-  amount_cents: number;
-  error_code: string | null;
-}
-
-function toTransaction(r: TxRow) {
-  return {
-    id: r.ref,
-    date: r.date,
-    type: r.type,
-    methodId: r.method_id,
-    status: r.status,
-    amountCents: r.amount_cents,
-    errorCode: r.error_code,
-  };
-}
-
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function num(v: unknown): number {
-  return Number(v ?? 0);
-}
+fundsRouter.use(requireUser, (_req, res, next) => {
+  // Admins have no funds of their own; they use /api/admin.
+  if (currentUser(res).role !== 'client') return next(new HttpError(403, 'FORBIDDEN', 'Client accounts only.'));
+  next();
+});
 
 fundsRouter.get('/overview', (_req, res) => {
   const user = currentUser(res);
-  const month = today().slice(0, 7);
-
-  const opening = num(
-    (db.prepare('SELECT opening_balance_cents AS v FROM users WHERE id = ?').get(user.id) as { v: number }).v,
-  );
-  const sums = db
-    .prepare(
-      `SELECT
-         COALESCE(SUM(CASE WHEN status = 'Completed' AND type = 'Deposit' THEN amount_cents END), 0) AS dep,
-         COALESCE(SUM(CASE WHEN status = 'Completed' AND type = 'Withdrawal' THEN amount_cents END), 0) AS wd,
-         COALESCE(SUM(CASE WHEN status = 'Pending' AND type = 'Deposit' THEN amount_cents END), 0) AS pending,
-         COUNT(CASE WHEN status = 'Pending' THEN 1 END) AS pendingCount,
-         COALESCE(SUM(CASE WHEN status = 'Completed' AND type = 'Deposit' AND substr(date, 1, 7) = $month THEN amount_cents END), 0) AS monthDep,
-         COUNT(CASE WHEN status = 'Completed' AND type = 'Deposit' AND substr(date, 1, 7) = $month THEN 1 END) AS monthDepCount,
-         COALESCE(SUM(CASE WHEN status = 'Completed' AND type = 'Withdrawal' AND substr(date, 1, 7) = $month THEN amount_cents END), 0) AS monthWd,
-         COUNT(CASE WHEN status = 'Completed' AND type = 'Withdrawal' AND substr(date, 1, 7) = $month THEN 1 END) AS monthWdCount,
-         COUNT(*) AS total
-       FROM transactions WHERE user_id = $user`,
-    )
-    .get({ $user: user.id, $month: month }) as Record<string, number>;
-
-  const available = opening + num(sums.dep) - num(sums.wd);
-  const pending = num(sums.pending);
-
-  const methods = (
-    db.prepare('SELECT id, kind, label, long_label FROM payment_methods WHERE user_id = ? ORDER BY kind').all(user.id) as unknown as MethodRow[]
-  ).map((m) => ({ id: m.id, kind: m.kind, label: m.label, longLabel: m.long_label }));
-
-  const transactions = (
-    db
-      .prepare(
-        `SELECT ref, date, type, method_id, status, amount_cents, error_code FROM transactions
-         WHERE user_id = ? ORDER BY date DESC, seq DESC LIMIT 50`,
-      )
-      .all(user.id) as unknown as TxRow[]
-  ).map(toTransaction);
-
+  const { summary, totalCount } = summaryFor(user.id);
   res.json({
     user,
     gateway: { name: gateway.name, isTest: gateway.isTest, triggers: gateway.isTest ? TEST_TRIGGERS : [] },
-    balance: { availableCents: available, pendingCents: pending, totalCents: available + pending, asOf: new Date().toISOString() },
-    summary: {
-      depositsCents: num(sums.monthDep),
-      depositsCount: num(sums.monthDepCount),
-      withdrawalsCents: num(sums.monthWd),
-      withdrawalsCount: num(sums.monthWdCount),
-      pendingCount: num(sums.pendingCount),
-    },
-    methods,
-    transactions,
-    totalCount: num(sums.total),
+    balance: { ...balanceFor(user.id), asOf: new Date().toISOString() },
+    summary,
+    methods: methodsFor(user.id),
+    methodLabels: methodLabelsFor(user.id),
+    transactions: transactionsFor(user.id),
+    totalCount,
   });
 });
 
@@ -112,20 +48,20 @@ fundsRouter.post('/deposits', async (req, res) => {
   }
   const methodId = str(req.body?.methodId, 'methodId', 64);
   const method = db
-    .prepare('SELECT id, kind, label, long_label FROM payment_methods WHERE id = ? AND user_id = ?')
+    .prepare(
+      'SELECT id, kind, label, long_label FROM payment_methods WHERE id = ? AND user_id = ? AND removed_at IS NULL',
+    )
     .get(methodId, user.id) as MethodRow | undefined;
   if (!method) throw new HttpError(404, 'METHOD_NOT_FOUND', 'That payment method is not linked to your account.');
 
   // 1. Record the deposit as Pending before talking to the provider.
-  const insert = db
-    .prepare(
-      `INSERT INTO transactions (user_id, date, type, method_id, status, amount_cents)
-       VALUES (?, ?, 'Deposit', ?, 'Pending', ?)`,
-    )
-    .run(user.id, today(), method.id, amountCents);
-  const seq = Number(insert.lastInsertRowid);
-  const reference = `TX-${81000 + seq}`;
-  db.prepare('UPDATE transactions SET ref = ? WHERE seq = ?').run(reference, seq);
+  const { seq, reference } = insertTransaction({
+    userId: user.id,
+    type: 'Deposit',
+    status: 'Pending',
+    amountCents,
+    methodId: method.id,
+  });
 
   // 2. Charge through the gateway.
   let result;
@@ -142,13 +78,11 @@ fundsRouter.post('/deposits', async (req, res) => {
   } else {
     db.prepare("UPDATE transactions SET status = 'Failed', error_code = ? WHERE seq = ?").run(result.code, seq);
   }
-  const row = db
-    .prepare('SELECT ref, date, type, method_id, status, amount_cents, error_code FROM transactions WHERE seq = ?')
-    .get(seq) as unknown as TxRow;
+  const transaction = transactionBySeq(seq);
 
   res.status(201).json(
     result.status === 'succeeded'
-      ? { ok: true, transaction: toTransaction(row), feeCents: result.feeCents }
-      : { ok: false, transaction: toTransaction(row), errorCode: result.code, errorMessage: result.message },
+      ? { ok: true, transaction, feeCents: result.feeCents }
+      : { ok: false, transaction, errorCode: result.code, errorMessage: result.message },
   );
 });

@@ -28,4 +28,6 @@ export const config = {
   },
   /** Largest single deposit accepted by the API, in cents ($1,000,000.00). */
   maxDepositCents: 100_000_000,
+  /** Largest single admin balance adjustment, in cents ($100,000,000.00). */
+  maxAdjustmentCents: 10_000_000_000,
 };

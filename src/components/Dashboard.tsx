@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../api';
 import { BRAND_NAME } from '../config';
-import { formatDate, formatUSD, signedUSD, splitUSD } from '../lib/format';
-import type { Overview, TxType, User } from '../types';
+import { formatDate, formatUSD, splitUSD } from '../lib/format';
+import { isInflow, txSubtitle, txTitle } from '../lib/transactions';
+import type { Overview, Transaction, User } from '../types';
 import { AddFundsModal } from './AddFundsModal';
+import { TransactionTable } from './TransactionTable';
 import {
-  ArrowDownIcon,
   ArrowUpIcon,
   BellIcon,
   CardIcon,
@@ -31,7 +32,13 @@ const NAV = [
   { label: 'Settings', href: '#settings', icon: SettingsIcon },
 ];
 
-type TypeFilter = 'all' | TxType;
+type TypeFilter = 'all' | 'Deposit' | 'Withdrawal' | 'Adjustment';
+
+function matchesType(t: Transaction, f: TypeFilter) {
+  if (f === 'all') return true;
+  if (f === 'Adjustment') return t.type === 'Credit' || t.type === 'Debit';
+  return t.type === f;
+}
 type PeriodFilter = '7' | '30' | 'all';
 
 function todayIso() {
@@ -89,22 +96,19 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
     window.setTimeout(() => setToast(null), 4000);
   }, []);
 
-  const methodLabel = useCallback(
-    (id: string) => data?.methods.find((m) => m.id === id)?.longLabel ?? 'Unknown method',
-    [data],
-  );
+  const subtitle = useCallback((t: Transaction) => txSubtitle(t, data?.methodLabels ?? {}), [data]);
 
   const visible = useMemo(() => {
     if (!data) return [];
     const q = query.trim().toLowerCase();
     const today = todayIso();
     return data.transactions.filter((t) => {
-      if (typeFilter !== 'all' && t.type !== typeFilter) return false;
+      if (!matchesType(t, typeFilter)) return false;
       if (period !== 'all' && daysBetween(t.date, today) > Number(period)) return false;
       if (!q) return true;
-      return [t.id, t.type, t.status, methodLabel(t.methodId), formatDate(t.date)].some((s) => s.toLowerCase().includes(q));
+      return [t.id, txTitle(t), t.status, subtitle(t), formatDate(t.date)].some((s) => s.toLowerCase().includes(q));
     });
-  }, [data, query, typeFilter, period, methodLabel]);
+  }, [data, query, typeFilter, period, subtitle]);
 
   function closeModal() {
     setModalOpen(false);
@@ -121,11 +125,11 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
     const header = ['Date', 'Type', 'Method', 'Reference', 'Status', 'Amount (USD)'];
     const lines = visible.map((t) => [
       t.date,
-      t.type,
-      methodLabel(t.methodId),
+      txTitle(t),
+      subtitle(t),
       t.id,
       t.status,
-      `${t.type === 'Deposit' ? '' : '-'}${(t.amountCents / 100).toFixed(2)}`,
+      `${isInflow(t) ? '' : '-'}${(t.amountCents / 100).toFixed(2)}`,
     ]);
     const csv = [header, ...lines].map((r) => r.map((v) => `"${v.replace(/"/g, '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -293,6 +297,7 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
                   <option value="all">All types</option>
                   <option value="Deposit">Deposits</option>
                   <option value="Withdrawal">Withdrawals</option>
+                  <option value="Adjustment">Adjustments</option>
                 </select>
               </label>
               <label>
@@ -309,68 +314,15 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
             </div>
           </div>
 
-          <div className="table-scroll">
-            <table className="tx-table">
-              <thead>
-                <tr>
-                  <th scope="col">Date</th>
-                  <th scope="col">Description</th>
-                  <th scope="col">Reference</th>
-                  <th scope="col">Status</th>
-                  <th scope="col" className="right">
-                    Amount
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map((t) => {
-                  const isIn = t.type === 'Deposit';
-                  const failed = t.status === 'Failed';
-                  const amountClass = failed ? 'tx-amount--failed' : isIn ? 'tx-amount--in' : '';
-                  return (
-                    <tr key={t.id}>
-                      <td className="tx-date">{formatDate(t.date)}</td>
-                      <td>
-                        <div className="tx-desc">
-                          <span className={`tx-icon ${isIn ? 'tx-icon--in' : 'tx-icon--out'}`}>
-                            {isIn ? <ArrowDownIcon size={16} /> : <ArrowUpIcon size={16} />}
-                          </span>
-                          <div>
-                            <strong>{t.type}</strong>
-                            <small>{methodLabel(t.methodId)}</small>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="tx-ref">{t.id}</td>
-                      <td>
-                        <span className={`pill pill--${t.status.toLowerCase()}`} title={t.errorCode ?? undefined}>
-                          {t.status}
-                        </span>
-                      </td>
-                      <td className={`right tx-amount ${amountClass}`}>
-                        {failed && <span className="sr-only">Failed, not counted: </span>}
-                        {signedUSD(t.amountCents, isIn ? '+' : '−')}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {data && visible.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="empty">
-                      {data.transactions.length === 0 ? 'No transactions yet. Add funds to get started.' : 'No transactions match these filters.'}
-                    </td>
-                  </tr>
-                )}
-                {!data && !loadError && (
-                  <tr>
-                    <td colSpan={5} className="empty">
-                      Loading transactions…
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          {data ? (
+            <TransactionTable
+              transactions={visible}
+              methodLabels={data.methodLabels}
+              emptyMessage={data.transactions.length === 0 ? "No transactions yet. Add funds to get started." : "No transactions match these filters."}
+            />
+          ) : (
+            !loadError && <p className="empty">Loading transactions…</p>
+          )}
 
           {data && (
             <div className="panel-foot">

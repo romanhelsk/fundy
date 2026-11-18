@@ -5,10 +5,13 @@ import { db, tx } from './db.ts';
 import { HttpError, readCookie, str } from './http.ts';
 import { sendMail } from './mailer.ts';
 
+export type Role = 'client' | 'admin';
+
 export interface User {
   id: number;
   email: string;
   name: string;
+  role: Role;
 }
 
 interface UserRow extends User {
@@ -47,7 +50,7 @@ function recordFailure(key: string) {
 
 // ---------- Helpers ----------
 function publicUser(u: User): User {
-  return { id: u.id, email: u.email, name: u.name };
+  return { id: u.id, email: u.email, name: u.name, role: u.role };
 }
 
 function maskEmail(email: string) {
@@ -111,7 +114,7 @@ export function requireUser(req: Request, res: Response, next: NextFunction) {
   if (!token) return next(new HttpError(401, 'UNAUTHENTICATED', 'Please sign in.'));
   const row = db
     .prepare(
-      `SELECT u.id, u.email, u.name FROM sessions s JOIN users u ON u.id = s.user_id
+      `SELECT u.id, u.email, u.name, u.role FROM sessions s JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = ? AND s.expires_at > ?`,
     )
     .get(sha256(token), Date.now()) as User | undefined;
@@ -126,6 +129,15 @@ export function requireUser(req: Request, res: Response, next: NextFunction) {
 export function currentUser(res: Response): User {
   return res.locals.user as User;
 }
+
+/** Use after requireUser. */
+export function requireAdmin(_req: Request, res: Response, next: NextFunction) {
+  if (currentUser(res).role !== 'admin') return next(new HttpError(403, 'FORBIDDEN', 'Admins only.'));
+  next();
+}
+
+export const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const MIN_PASSWORD_LENGTH = 10;
 
 // ---------- Routes ----------
 export const authRouter = Router();
@@ -146,7 +158,7 @@ authRouter.post('/register', async (req, res) => {
     const result = db.prepare('INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)').run(email, name, passwordHash);
     const id = Number(result.lastInsertRowid);
     createTestPaymentMethods(id);
-    return { id, email, name };
+    return { id, email, name, role: 'client' as const };
   });
   // New accounts verify their email with the same code flow before the first session.
   res.status(201).json(await startChallenge(user, false));
@@ -159,7 +171,7 @@ authRouter.post('/login', async (req, res) => {
   const key = throttleKey(req, email);
   assertNotThrottled(key);
 
-  const user = db.prepare('SELECT id, email, name, password_hash FROM users WHERE email = ?').get(email) as
+  const user = db.prepare('SELECT id, email, name, role, password_hash FROM users WHERE email = ?').get(email) as
     | UserRow
     | undefined;
   const ok = await verifyPassword(password, user?.password_hash ?? DUMMY_HASH);
@@ -206,7 +218,7 @@ authRouter.post('/verify', (req, res) => {
   }
   db.prepare('DELETE FROM mfa_challenges WHERE id = ?').run(challenge.id);
   createSession(res, challenge.user_id, challenge.remember === 1);
-  const user = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(challenge.user_id) as unknown as User;
+  const user = db.prepare('SELECT id, email, name, role FROM users WHERE id = ?').get(challenge.user_id) as unknown as User;
   res.json({ user: publicUser(user) });
 });
 
@@ -224,7 +236,7 @@ authRouter.post('/resend', async (req, res) => {
     now + config.mfa.codeTtlMs,
     challenge.id,
   );
-  const user = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(challenge.user_id) as unknown as User;
+  const user = db.prepare('SELECT id, email, name, role FROM users WHERE id = ?').get(challenge.user_id) as unknown as User;
   await sendVerificationCode(user, code);
   res.json({ ok: true });
 });

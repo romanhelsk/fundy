@@ -24,8 +24,23 @@ const DEMO_TX = [
 ] as const;
 const DEMO_AVAILABLE_CENTS = 124_830_957;
 
+/** Local test admin, created on first start (SEED_DEMO_USER=false skips it too). */
+export const ADMIN_USER = {
+  email: 'admin@fundy.test',
+  password: 'fundy-admin-2026',
+  name: 'Fundy Admin',
+};
+
 export async function seed() {
   if (process.env.SEED_DEMO_USER === 'false') return;
+  if (!db.prepare('SELECT 1 FROM users WHERE email = ?').get(ADMIN_USER.email)) {
+    db.prepare("INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'admin')").run(
+      ADMIN_USER.email,
+      ADMIN_USER.name,
+      await hashPassword(ADMIN_USER.password),
+    );
+    console.log(`Seeded test admin ${ADMIN_USER.email} (password in server/seed.ts)`);
+  }
   if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(DEMO_USER.email)) return;
 
   const passwordHash = await hashPassword(DEMO_USER.password);

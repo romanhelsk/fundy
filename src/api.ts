@@ -1,4 +1,14 @@
-import type { DepositResponse, MfaChallenge, Overview, User } from './types';
+import type {
+  Balance,
+  ClientDetail,
+  ClientListItem,
+  DepositResponse,
+  MfaChallenge,
+  Overview,
+  PaymentMethod,
+  Transaction,
+  User,
+} from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -42,4 +52,23 @@ export const api = {
   overview: () => request<Overview>('GET', '/overview'),
   deposit: (amountCents: number, methodId: string) =>
     request<DepositResponse>('POST', '/deposits', { amountCents, methodId }),
+
+  admin: {
+    clients: (q = '') => request<{ users: ClientListItem[] }>('GET', `/admin/users?q=${encodeURIComponent(q)}`),
+    createClient: (name: string, email: string) =>
+      request<{ user: User; temporaryPassword: string }>('POST', '/admin/users', { name, email }),
+    client: (id: number) => request<ClientDetail>('GET', `/admin/users/${id}`),
+    adjust: (id: number, body: { direction: 'credit' | 'debit'; amountCents: number; status: 'Completed' | 'Pending'; note: string }) =>
+      request<{ transaction: Transaction; balance: Balance }>('POST', `/admin/users/${id}/adjustments`, body),
+    settle: (id: number, ref: string, status: 'Completed' | 'Failed') =>
+      request<{ transaction: Transaction; balance: Balance }>(
+        'POST',
+        `/admin/users/${id}/transactions/${encodeURIComponent(ref)}/settle`,
+        { status },
+      ),
+    linkMethod: (id: number, body: { kind: 'bank' | 'card'; last4: string; institution: string }) =>
+      request<{ methods: PaymentMethod[] }>('POST', `/admin/users/${id}/methods`, body),
+    removeMethod: (id: number, methodId: string) =>
+      request<{ methods: PaymentMethod[] }>('POST', `/admin/users/${id}/methods/${encodeURIComponent(methodId)}/remove`),
+  },
 };

@@ -1,6 +1,7 @@
 import express from 'express';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { adminRouter } from './admin.ts';
 import { authRouter, pruneExpired } from './auth.ts';
 import { config } from './config.ts';
 import { fundsRouter } from './funds.ts';
@@ -28,6 +29,7 @@ app.use('/api', express.json({ limit: '10kb' }), originGuard, (_req, res, next) 
   next();
 });
 app.use('/api/auth', authRouter);
+app.use('/api/admin', adminRouter);
 app.use('/api', fundsRouter);
 app.use('/api', (_req, _res, next) => next(new HttpError(404, 'NOT_FOUND', 'Not found.')));
 

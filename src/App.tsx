@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
+import { AdminApp } from './components/admin/AdminApp';
 import { Dashboard } from './components/Dashboard';
 import { Login } from './components/Login';
 import { Signup } from './components/Signup';
@@ -48,6 +49,15 @@ export function App() {
         />
       );
     case 'app':
+      if (view.user.role === 'admin') {
+        return (
+          <AdminApp
+            user={view.user}
+            onSignOut={signOut}
+            onSessionExpired={() => toLogin('Your session has expired. Please sign in again.')}
+          />
+        );
+      }
       return (
         <Dashboard
           user={view.user}
