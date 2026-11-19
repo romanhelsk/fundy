@@ -67,6 +67,18 @@ are **not** created in production (`SEED_DEMO_USER` defaults to off).
 
 ## 4. First sign-in
 
+**Option A, from your computer (no bootstrap variables needed):** with the Turso URL and
+token in your local `.env`, run:
+
+```powershell
+npm run create-admin -- you@yourcompany.com "Your Name"
+```
+
+It prints a temporary password once. Sign in on the deployed site with it, enter the
+emailed code, and set your own password. Use the same command later to add more admins.
+
+**Option B, bootstrap variables in Vercel:**
+
 1. Open the site and sign in with `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`.
 2. Enter the code from your email, then set your own password (required).
 3. Remove `BOOTSTRAP_ADMIN_PASSWORD` from Vercel's environment variables. It is only used

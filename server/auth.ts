@@ -99,8 +99,8 @@ async function startChallenge(user: User, remember: boolean) {
 async function sendVerificationCode(user: User, code: string) {
   await sendMail({
     to: user.email,
-    subject: 'Your sign-in code',
-    text: `Your verification code is ${code}. It expires in 10 minutes.\nIf you didn't try to sign in, change your password.`,
+    subject: `Your ${config.brandName} sign-in code`,
+    text: `Your ${config.brandName} verification code is ${code}. It expires in 10 minutes.\nIf you didn't try to sign in, change your password.`,
   });
 }
 

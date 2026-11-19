@@ -1,6 +1,7 @@
 const env = process.env;
 const isProduction = env.NODE_ENV === 'production';
 const onVercel = Boolean(env.VERCEL);
+const databaseUrl = env.TURSO_DATABASE_URL ?? env.DATABASE_URL ?? 'file:data/fundy.db';
 
 /** Origins allowed to make state-changing requests (CSRF guard). */
 function appOrigins(): string[] {
@@ -16,6 +17,8 @@ function appOrigins(): string[] {
 }
 
 export const config = {
+  /** Product name used in emails. */
+  brandName: env.BRAND_NAME ?? 'RecoverWise',
   isProduction,
   onVercel,
   port: Number(env.API_PORT ?? 3001),
@@ -25,7 +28,7 @@ export const config = {
    * libSQL connection. Locally a SQLite file; in production a Turso database
    * (libsql://<db>-<org>.turso.io) with its auth token.
    */
-  databaseUrl: env.TURSO_DATABASE_URL ?? env.DATABASE_URL ?? 'file:data/fundy.db',
+  databaseUrl,
   databaseAuthToken: env.TURSO_AUTH_TOKEN,
 
   /** Cookies get the Secure flag over HTTPS. On by default in production. */
@@ -34,8 +37,14 @@ export const config = {
   /** Shared secret for /api/cron/* (sent as "Authorization: Bearer <secret>"). */
   cronSecret: env.CRON_SECRET,
 
-  /** Test accounts from server/seed.ts. Off in production unless explicitly enabled. */
-  seedDemoUsers: env.SEED_DEMO_USER ? env.SEED_DEMO_USER === 'true' : !isProduction,
+  /**
+   * Test accounts from server/seed.ts (their passwords are in the repo). Only
+   * seeded into a local file database in development, never into a remote
+   * database (Turso) or in production, unless SEED_DEMO_USER=true.
+   */
+  seedDemoUsers: env.SEED_DEMO_USER
+    ? env.SEED_DEMO_USER === 'true'
+    : !isProduction && databaseUrl.startsWith('file:'),
   /** Creates the first admin on startup if no admin exists (production bootstrap). */
   bootstrapAdmin:
     env.BOOTSTRAP_ADMIN_EMAIL && env.BOOTSTRAP_ADMIN_PASSWORD
