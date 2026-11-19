@@ -10,11 +10,21 @@ calls the deadline job every minute.
 
 ## 1. Create the Turso database
 
-```powershell
-# Install the CLI (Windows: via WSL or the installer in Turso's docs), then:
+Easiest (any OS, no install), from the web dashboard:
+
+1. Sign up at [app.turso.tech](https://app.turso.tech) (GitHub sign-in works).
+2. **Create Database**, name it `fundy`, pick the region closest to your users.
+3. On the database page, copy its **URL** (`libsql://fundy-<org>.turso.io`) → `TURSO_DATABASE_URL`,
+   and generate a **token** → `TURSO_AUTH_TOKEN`. Keep the token private.
+
+Or with the Turso **Cloud** CLI (macOS/Linux, or WSL on Windows). Note: the `turso`
+program that opens a `turso>` prompt is the Turso *database engine's* SQL shell, not
+this CLI, so it won't understand `auth` or `db` commands.
+
+```bash
 turso auth signup
 turso db create fundy
-turso db show fundy --url          # → TURSO_DATABASE_URL  (libsql://fundy-<org>.turso.io)
+turso db show fundy --url          # → TURSO_DATABASE_URL
 turso db tokens create fundy       # → TURSO_AUTH_TOKEN
 ```
 
