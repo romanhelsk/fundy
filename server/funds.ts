@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { currentUser, requireUser } from './auth.ts';
 import { config } from './config.ts';
-import { db } from './db.ts';
+import { db, tx } from './db.ts';
 import { TEST_TRIGGERS, gateway } from './gateway.ts';
 import { HttpError, str } from './http.ts';
 import {
@@ -36,7 +36,9 @@ export function assertCanMoveMoney(userId: number) {
     throw new HttpError(
       409,
       'PENDING_TRANSFER',
-      `Adding and withdrawing funds are paused until transfer ${pending.reference} is received.`,
+      pending.direction === 'in'
+        ? `Adding and withdrawing funds are paused until transfer ${pending.reference} is received.`
+        : `Adding and withdrawing funds are paused until withdrawal ${pending.reference} is completed.`,
     );
   }
 }
@@ -108,4 +110,41 @@ fundsRouter.post('/deposits', async (req, res) => {
       ? { ok: true, transaction, feeCents: result.feeCents }
       : { ok: false, transaction, errorCode: result.code, errorMessage: result.message },
   );
+});
+
+/**
+ * Requests a wire withdrawal to one of the client's linked bank accounts.
+ * The amount is held immediately and the request goes Pending with a 12-hour
+ * deadline; an admin marks it Completed once the wire is sent (or Failed to
+ * release the hold). If neither happens in time, it fails and the account is
+ * suspended, the same rule as pending deposits.
+ */
+fundsRouter.post('/withdrawals', (req, res) => {
+  const user = currentUser(res);
+  assertCanMoveMoney(user.id);
+  const amountCents = req.body?.amountCents;
+  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+    throw new HttpError(400, 'VALIDATION', 'Enter an amount greater than $0.00.');
+  }
+  const methodId = str(req.body?.methodId, 'methodId', 64);
+  const method = db
+    .prepare(
+      "SELECT id, kind, label, long_label FROM payment_methods WHERE id = ? AND user_id = ? AND removed_at IS NULL AND kind = 'bank'",
+    )
+    .get(methodId, user.id) as MethodRow | undefined;
+  if (!method) throw new HttpError(404, 'METHOD_NOT_FOUND', 'Choose one of your linked bank accounts.');
+
+  const { seq } = tx(() => {
+    // Checked inside the transaction so two requests can't both spend the same balance.
+    const { availableCents } = balanceFor(user.id);
+    if (amountCents > availableCents) {
+      throw new HttpError(400, 'INSUFFICIENT_BALANCE', "You can't withdraw more than your available balance.");
+    }
+    if (pendingTransferFor(user.id)) {
+      throw new HttpError(409, 'PENDING_TRANSFER', 'Another transaction is already pending.');
+    }
+    return insertTransaction({ userId: user.id, type: 'Withdrawal', status: 'Pending', amountCents, methodId: method.id });
+  });
+
+  res.status(201).json({ transaction: transactionBySeq(seq), pendingTransfer: pendingTransferFor(user.id) });
 });

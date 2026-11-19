@@ -119,6 +119,11 @@ export function AdminClientDetail({ clientId, onBack, onSessionExpired }: Props)
             <span>
               Total <strong>{formatUSD(balance.totalCents)}</strong>
             </span>
+            {balance.heldCents > 0 && (
+              <span>
+                On hold <strong>{formatUSD(balance.heldCents)}</strong>
+              </span>
+            )}
             <span>Client since {user.createdAt.slice(0, 10)}</span>
             {user.mustChangePassword && <span>Awaiting first sign-in</span>}
           </div>
@@ -286,8 +291,12 @@ export function AdminClientDetail({ clientId, onBack, onSessionExpired }: Props)
           title={dialog.status === 'Completed' ? 'Complete this transaction?' : 'Mark this transaction as failed?'}
           body={
             dialog.status === 'Completed'
-              ? `${dialog.settle.id} (${formatUSD(dialog.settle.amountCents)}) moves from pending into the available balance.`
-              : `${dialog.settle.id} (${formatUSD(dialog.settle.amountCents)}) is removed from pending and never reaches the balance.`
+              ? isOutflow(dialog.settle)
+                ? `Confirm the wire for ${dialog.settle.id} (${formatUSD(dialog.settle.amountCents)}) was sent. The held amount leaves the client's balance.`
+                : `${dialog.settle.id} (${formatUSD(dialog.settle.amountCents)}) moves from pending into the available balance.`
+              : isOutflow(dialog.settle)
+                ? `${dialog.settle.id} (${formatUSD(dialog.settle.amountCents)}) is cancelled and the held amount returns to the client's available balance.`
+                : `${dialog.settle.id} (${formatUSD(dialog.settle.amountCents)}) is removed from pending and never reaches the balance.`
           }
           confirmLabel={dialog.status === 'Completed' ? 'Complete' : 'Mark as failed'}
           onClose={() => setDialog(null)}
@@ -312,6 +321,10 @@ export function AdminClientDetail({ clientId, onBack, onSessionExpired }: Props)
   );
 }
 
+function isOutflow(t: Transaction) {
+  return t.type === 'Withdrawal' || t.type === 'Debit';
+}
+
 function describeAudit(a: AuditEntry): string {
   const d = a.details as Record<string, string | number>;
   const amount = typeof d.amountCents === 'number' ? formatUSD(d.amountCents) : '';
@@ -319,7 +332,9 @@ function describeAudit(a: AuditEntry): string {
     case 'user.create':
       return `Created the account (${d.email})`;
     case 'transaction.expire':
-      return `Transfer ${d.reference} (${amount}) wasn't received within 12 hours and was marked failed${d.suspended ? '; account suspended' : ''}`;
+      return d.type === 'Withdrawal'
+        ? `Withdrawal ${d.reference} (${amount}) wasn't completed within 12 hours and was cancelled${d.suspended ? '; account suspended' : ''}`
+        : `Transfer ${d.reference} (${amount}) wasn't received within 12 hours and was marked failed${d.suspended ? '; account suspended' : ''}`;
     case 'account.reactivate':
       return 'Reactivated the account';
     case 'user.reset_password':

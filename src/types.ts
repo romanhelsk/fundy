@@ -32,6 +32,8 @@ export interface Transaction {
 export interface Balance {
   availableCents: number;
   pendingCents: number;
+  /** Pending withdrawals: out of the available balance until completed or failed. */
+  heldCents: number;
   totalCents: number;
 }
 
@@ -45,6 +47,10 @@ export interface Summary {
 
 export interface PendingTransfer {
   reference: string;
+  type: TxType;
+  /** in: the client must send the money. out: a withdrawal an admin must send. */
+  direction: 'in' | 'out';
+  methodLabel: string | null;
   amountCents: number;
   /** ISO time. If the transfer isn't received by then, the account is suspended. */
   dueAt: string;
@@ -53,7 +59,7 @@ export interface PendingTransfer {
 export interface AccountStatus {
   status: 'active' | 'suspended';
   suspendedAt: string | null;
-  suspendedReason: 'TRANSFER_NOT_RECEIVED' | null;
+  suspendedReason: 'TRANSFER_NOT_RECEIVED' | 'WITHDRAWAL_NOT_COMPLETED' | null;
   expiredReference: string | null;
 }
 

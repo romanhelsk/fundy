@@ -7,6 +7,7 @@ import type { Overview, Transaction, User } from '../types';
 import { AddFundsModal } from './AddFundsModal';
 import { AccountNotice } from './AccountNotice';
 import { TransactionTable } from './TransactionTable';
+import { WithdrawModal } from './WithdrawModal';
 import {
   ArrowUpIcon,
   BellIcon,
@@ -65,6 +66,7 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
   const [data, setData] = useState<Overview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -106,7 +108,9 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
   const blockedReason = suspended
     ? 'Your account is suspended.'
     : data?.pendingTransfer
-      ? `Paused until transfer ${data.pendingTransfer.reference} is received.`
+      ? data.pendingTransfer.direction === 'in'
+        ? `Paused until transfer ${data.pendingTransfer.reference} is received.`
+        : `Paused until withdrawal ${data.pendingTransfer.reference} is completed.`
       : undefined;
 
   const showToast = useCallback((msg: string) => {
@@ -248,6 +252,11 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
                 <span>
                   Pending <strong>{formatUSD(data.balance.pendingCents)}</strong>
                 </span>
+                {data.balance.heldCents > 0 && (
+                  <span>
+                    On hold <strong>{formatUSD(data.balance.heldCents)}</strong>
+                  </span>
+                )}
                 <span>
                   Total <strong>{formatUSD(data.balance.totalCents)}</strong>
                 </span>
@@ -269,7 +278,7 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
             </button>
             <button
               className="btn btn-outline-dark"
-              onClick={() => showToast('Withdrawals are not available yet.')}
+              onClick={() => setWithdrawOpen(true)}
               disabled={moneyBlocked}
               title={blockedReason}
               aria-describedby={blockedReason ? 'money-blocked' : undefined}
@@ -367,6 +376,16 @@ export function Dashboard({ user, onSignOut, onSessionExpired }: Props) {
           )}
         </section>
       </main>
+
+      {withdrawOpen && data && (
+        <WithdrawModal
+          availableCents={data.balance.availableCents}
+          methods={data.methods}
+          onClose={() => setWithdrawOpen(false)}
+          onRequested={load}
+          onSessionExpired={onSessionExpired}
+        />
+      )}
 
       {modalOpen && data && (
         <AddFundsModal

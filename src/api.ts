@@ -7,6 +7,7 @@ import type {
   MfaChallenge,
   Overview,
   PaymentMethod,
+  PendingTransfer,
   Transaction,
   User,
 } from './types';
@@ -55,6 +56,8 @@ export const api = {
   overview: () => request<Overview>('GET', '/overview'),
   deposit: (amountCents: number, methodId: string) =>
     request<DepositResponse>('POST', '/deposits', { amountCents, methodId }),
+  withdraw: (amountCents: number, methodId: string) =>
+    request<{ transaction: Transaction; pendingTransfer: PendingTransfer }>('POST', '/withdrawals', { amountCents, methodId }),
 
   admin: {
     clients: (q = '') => request<{ users: ClientListItem[] }>('GET', `/admin/users?q=${encodeURIComponent(q)}`),
