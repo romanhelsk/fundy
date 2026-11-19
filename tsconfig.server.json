@@ -9,10 +9,8 @@
     "noUnusedParameters": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
-    "erasableSyntaxOnly": true,
     "types": ["node"]
   },
-  "include": ["server"]
+  "include": ["server", "api"]
 }

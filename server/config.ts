@@ -1,16 +1,54 @@
-import path from 'node:path';
+const env = process.env;
+const isProduction = env.NODE_ENV === 'production';
+const onVercel = Boolean(env.VERCEL);
+
+/** Origins allowed to make state-changing requests (CSRF guard). */
+function appOrigins(): string[] {
+  const list = (env.APP_ORIGIN ?? 'http://localhost:5173,http://localhost:3001')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  // Vercel deployment URLs (preview + production) are allowed automatically.
+  for (const host of [env.VERCEL_URL, env.VERCEL_BRANCH_URL, env.VERCEL_PROJECT_PRODUCTION_URL]) {
+    if (host) list.push(`https://${host}`);
+  }
+  return [...new Set(list)];
+}
 
 export const config = {
-  port: Number(process.env.API_PORT ?? 3001),
-  /** Origins allowed to make state-changing requests (CSRF guard). */
-  appOrigins: (process.env.APP_ORIGIN ?? 'http://localhost:5173,http://localhost:3001').split(','),
-  dataDir: process.env.DATA_DIR ?? path.resolve('data'),
-  /** Set to true when served over HTTPS so cookies get the Secure flag. */
-  secureCookies: process.env.SECURE_COOKIES === 'true',
+  isProduction,
+  onVercel,
+  port: Number(env.API_PORT ?? 3001),
+  appOrigins: appOrigins(),
+
+  /**
+   * libSQL connection. Locally a SQLite file; in production a Turso database
+   * (libsql://<db>-<org>.turso.io) with its auth token.
+   */
+  databaseUrl: env.TURSO_DATABASE_URL ?? env.DATABASE_URL ?? 'file:data/fundy.db',
+  databaseAuthToken: env.TURSO_AUTH_TOKEN,
+
+  /** Cookies get the Secure flag over HTTPS. On by default in production. */
+  secureCookies: env.SECURE_COOKIES ? env.SECURE_COOKIES === 'true' : isProduction,
+
+  /** Shared secret for /api/cron/* (sent as "Authorization: Bearer <secret>"). */
+  cronSecret: env.CRON_SECRET,
+
+  /** Test accounts from server/seed.ts. Off in production unless explicitly enabled. */
+  seedDemoUsers: env.SEED_DEMO_USER ? env.SEED_DEMO_USER === 'true' : !isProduction,
+  /** Creates the first admin on startup if no admin exists (production bootstrap). */
+  bootstrapAdmin:
+    env.BOOTSTRAP_ADMIN_EMAIL && env.BOOTSTRAP_ADMIN_PASSWORD
+      ? { email: env.BOOTSTRAP_ADMIN_EMAIL, password: env.BOOTSTRAP_ADMIN_PASSWORD, name: env.BOOTSTRAP_ADMIN_NAME ?? 'Admin' }
+      : null,
+
+  /** Email: Resend when RESEND_API_KEY and MAIL_FROM are set, otherwise printed to the console. */
+  mail: { resendApiKey: env.RESEND_API_KEY, from: env.MAIL_FROM },
+
   /** Which payment gateway to use. Only "test" exists for now. */
-  paymentGateway: process.env.PAYMENT_GATEWAY ?? 'test',
+  paymentGateway: env.PAYMENT_GATEWAY ?? 'test',
   /** Simulated provider latency for the test gateway, in ms. */
-  testGatewayLatencyMs: Number(process.env.TEST_GATEWAY_LATENCY_MS ?? 1800),
+  testGatewayLatencyMs: Number(env.TEST_GATEWAY_LATENCY_MS ?? 1800),
 
   session: {
     cookieName: 'fundy_sid',
@@ -28,7 +66,7 @@ export const config = {
   },
   /** Largest single deposit accepted by the API, in cents ($1,000,000.00). */
   maxDepositCents: 100_000_000,
-  /** How long a client has to send the transfer for a pending deposit/credit before suspension. */
+  /** How long a pending deposit, credit or withdrawal has before it fails and the account is suspended. */
   transferWindowMs: 12 * 60 * 60 * 1000,
   /** Largest single admin balance adjustment, in cents ($100,000,000.00). */
   maxAdjustmentCents: 10_000_000_000,

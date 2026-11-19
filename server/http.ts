@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import { config } from './config.ts';
+import { config } from './config.js';
 
 export class HttpError extends Error {
   status: number;

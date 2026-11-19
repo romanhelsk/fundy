@@ -1,53 +1,39 @@
-import express from 'express';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
-import { adminRouter } from './admin.ts';
-import { authRouter, pruneExpired } from './auth.ts';
-import { config } from './config.ts';
-import { fundsRouter } from './funds.ts';
-import { gateway } from './gateway.ts';
-import { HttpError, errorHandler, originGuard } from './http.ts';
-import { enforceTransferDeadlines } from './ledger.ts';
-import { seed } from './seed.ts';
+// Local / self-hosted entry point: a long-running Express server.
+// On Vercel the app runs as a function instead (api/index.ts).
+try {
+  process.loadEnvFile('.env');
+} catch {
+  // No .env file: defaults apply.
+}
 
-await seed();
+// Imported after .env is loaded, so config sees those values.
+const express = (await import('express')).default;
+const { existsSync } = await import('node:fs');
+const path = (await import('node:path')).default;
+const { app, init } = await import('./app.js');
+const { pruneExpired } = await import('./auth.js');
+const { config } = await import('./config.js');
+const { gateway } = await import('./gateway.js');
+const { enforceTransferDeadlines } = await import('./ledger.js');
 
-const app = express();
-app.disable('x-powered-by');
-app.set('trust proxy', 'loopback');
+await init();
 
-app.use((_req, res, next) => {
-  res.set({
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'same-origin',
-    'X-Frame-Options': 'DENY',
-  });
-  next();
-});
-
-app.use('/api', express.json({ limit: '10kb' }), originGuard, (_req, res, next) => {
-  res.set('Cache-Control', 'no-store');
-  next();
-});
-app.use('/api/auth', authRouter);
-app.use('/api/admin', adminRouter);
-app.use('/api', fundsRouter);
-app.use('/api', (_req, _res, next) => next(new HttpError(404, 'NOT_FOUND', 'Not found.')));
-
-// In production, serve the built frontend from the same origin.
+// Serve the built frontend from the same origin when it exists (npm start).
 const dist = path.resolve('dist');
 if (existsSync(dist)) {
   app.use(express.static(dist));
   app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 
-app.use(errorHandler);
-
-setInterval(pruneExpired, 15 * 60 * 1000).unref();
-// Suspend accounts whose transfer deadline passed, even if nobody is looking.
-enforceTransferDeadlines();
-setInterval(() => enforceTransferDeadlines(), 60 * 1000).unref();
+// Background jobs. On Vercel these run through /api/cron/enforce-deadlines instead.
+const every = (ms: number, job: () => Promise<unknown>) =>
+  setInterval(() => job().catch((err) => console.error('Background job failed', err)), ms).unref();
+await enforceTransferDeadlines();
+every(60 * 1000, () => enforceTransferDeadlines());
+every(15 * 60 * 1000, pruneExpired);
 
 app.listen(config.port, () => {
-  console.log(`API listening on http://localhost:${config.port} (payment gateway: ${gateway.name})`);
+  console.log(`API listening on http://localhost:${config.port} (payment gateway: ${gateway.name}, db: ${config.databaseUrl.split('?')[0]})`);
 });
+
+export {};

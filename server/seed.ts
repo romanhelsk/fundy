@@ -1,15 +1,22 @@
-import { createTestPaymentMethods } from './auth.ts';
-import { hashPassword } from './crypto.ts';
-import { db, tx } from './db.ts';
+import { createTestPaymentMethods } from './auth.js';
+import { config } from './config.js';
+import { hashPassword } from './crypto.js';
+import { all, get, run, tx } from './db.js';
 
 /**
- * Local test account, created on first start. Change or remove before any
- * shared deployment (set SEED_DEMO_USER=false).
+ * Local test accounts. Created on startup when seeding is on: by default in
+ * development, never in production unless SEED_DEMO_USER=true.
  */
 export const DEMO_USER = {
   email: 'demo@fundy.test',
   password: 'fundy-demo-2026',
   name: 'Alex Carter',
+};
+
+export const ADMIN_USER = {
+  email: 'admin@fundy.test',
+  password: 'fundy-admin-2026',
+  name: 'Fundy Admin',
 };
 
 // The design's demo figures: available $1,248,309.57 with these 7 recent rows.
@@ -24,51 +31,62 @@ const DEMO_TX = [
 ] as const;
 const DEMO_AVAILABLE_CENTS = 124_830_957;
 
-/** Local test admin, created on first start (SEED_DEMO_USER=false skips it too). */
-export const ADMIN_USER = {
-  email: 'admin@fundy.test',
-  password: 'fundy-admin-2026',
-  name: 'Fundy Admin',
-};
-
 export async function seed() {
-  if (process.env.SEED_DEMO_USER === 'false') return;
-  if (!db.prepare('SELECT 1 FROM users WHERE email = ?').get(ADMIN_USER.email)) {
-    db.prepare("INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'admin')").run(
+  await bootstrapAdmin();
+  if (!config.seedDemoUsers) return;
+
+  if (!(await get('SELECT 1 FROM users WHERE email = ?', [ADMIN_USER.email]))) {
+    await run("INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'admin')", [
       ADMIN_USER.email,
       ADMIN_USER.name,
       await hashPassword(ADMIN_USER.password),
-    );
+    ]);
     console.log(`Seeded test admin ${ADMIN_USER.email} (password in server/seed.ts)`);
   }
-  if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(DEMO_USER.email)) return;
+  if (await get('SELECT 1 FROM users WHERE email = ?', [DEMO_USER.email])) return;
 
   const passwordHash = await hashPassword(DEMO_USER.password);
   const net = DEMO_TX.reduce((sum, t) => {
     if (t.status !== 'Completed') return sum;
     return sum + (t.type === 'Deposit' ? t.cents : -t.cents);
   }, 0);
+  const dueAt = new Date(Date.now() + config.transferWindowMs).toISOString();
 
-  tx(() => {
-    const userId = Number(
-      db
-        .prepare('INSERT INTO users (email, name, password_hash, opening_balance_cents) VALUES (?, ?, ?, ?)')
-        .run(DEMO_USER.email, DEMO_USER.name, passwordHash, DEMO_AVAILABLE_CENTS - net).lastInsertRowid,
+  await tx(async (t) => {
+    const { lastInsertRowid: userId } = await run(
+      'INSERT INTO users (email, name, password_hash, opening_balance_cents) VALUES (?, ?, ?, ?)',
+      [DEMO_USER.email, DEMO_USER.name, passwordHash, DEMO_AVAILABLE_CENTS - net],
+      t,
     );
-    createTestPaymentMethods(userId, { bank: '4417', card: '0932' });
-    const methods = db.prepare('SELECT id, kind FROM payment_methods WHERE user_id = ?').all(userId) as unknown as {
-      id: string;
-      kind: string;
-    }[];
+    await createTestPaymentMethods(userId, { bank: '4417', card: '0932' }, t);
+    const methods = await all<{ id: string; kind: string }>('SELECT id, kind FROM payment_methods WHERE user_id = ?', [userId], t);
     const methodId = (kind: string) => methods.find((m) => m.kind === kind)!.id;
 
-    const insert = db.prepare(
-      `INSERT INTO transactions (ref, user_id, date, type, method_id, status, amount_cents, error_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const t of [...DEMO_TX].reverse()) {
-      insert.run(t.ref, userId, t.date, t.type, methodId(t.method), t.status, t.cents, 'error' in t ? t.error : null);
+    for (const d of [...DEMO_TX].reverse()) {
+      await run(
+        `INSERT INTO transactions (ref, user_id, date, type, method_id, status, amount_cents, error_code, due_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [d.ref, userId, d.date, d.type, methodId(d.method), d.status, d.cents, 'error' in d ? d.error : null, d.status === 'Pending' ? dueAt : null],
+        t,
+      );
     }
   });
   console.log(`Seeded test account ${DEMO_USER.email} (password in server/seed.ts)`);
+}
+
+/**
+ * Production bootstrap: if BOOTSTRAP_ADMIN_EMAIL / BOOTSTRAP_ADMIN_PASSWORD are
+ * set and there is no admin yet, create one. They must set a new password at
+ * first sign-in, so the env value stops working after that.
+ */
+async function bootstrapAdmin() {
+  const admin = config.bootstrapAdmin;
+  if (!admin) return;
+  if (await get("SELECT 1 FROM users WHERE role = 'admin'")) return;
+  await run("INSERT INTO users (email, name, password_hash, role, must_change_password) VALUES (?, ?, ?, 'admin', 1)", [
+    admin.email.toLowerCase(),
+    admin.name,
+    await hashPassword(admin.password),
+  ]);
+  console.log(`Created first admin ${admin.email} (must set a new password at first sign-in)`);
 }
