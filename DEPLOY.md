@@ -77,6 +77,14 @@ npm run create-admin -- you@yourcompany.com "Your Name"
 It prints a temporary password once. Sign in on the deployed site with it, enter the
 emailed code, and set your own password. Use the same command later to add more admins.
 
+If your computer can't reach Turso (e.g. `ENOTFOUND`, a DNS problem on your network),
+add `--sql`: nothing connects, and it prints an `INSERT` statement to paste into the
+Turso dashboard's SQL console instead.
+
+```powershell
+npm run create-admin -- --sql you@yourcompany.com "Your Name"
+```
+
 **Option B, bootstrap variables in Vercel:**
 
 1. Open the site and sign in with `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`.
