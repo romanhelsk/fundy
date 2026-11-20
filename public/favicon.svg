@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- RecoverWise mark: LogoIcon's pulse line (scaled 1.2x, centred) on the navy brand tile -->
+  <rect width="32" height="32" rx="8" fill="#0F172A"/>
+  <path d="M5.2 16h4.8l3.6-9.6 4.8 19.2 3.6-9.6h4.8" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
