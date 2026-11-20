@@ -5,7 +5,7 @@
 // Offline mode: doesn't connect to any database. Prints a SQL statement to paste
 // into Turso's SQL console (useful when your network can't reach Turso directly):
 //
-//   npm run create-admin -- --sql you@company.com "Your Name"
+//   npm run create-admin:sql -- you@company.com "Your Name"
 //
 // Either way it prints a temporary password once. The admin must set their own
 // password at first sign-in (after the emailed verification code).
@@ -66,7 +66,7 @@ try {
 Your network or DNS can't connect to the database. Either fix that and retry, or use
 offline mode and paste the SQL into Turso's SQL console:
 
-  npm run create-admin -- --sql ${normalizedEmail} "${name}"`);
+  npm run create-admin:sql -- ${normalizedEmail} "${name}"`);
     process.exit(1);
   }
   throw err;

@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json",
     "build": "npm run typecheck && vite build",
     "start": "tsx server/index.ts",
-    "create-admin": "tsx scripts/create-admin.ts"
+    "create-admin": "tsx scripts/create-admin.ts",
+    "create-admin:sql": "tsx scripts/create-admin.ts --sql"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",
